@@ -1,0 +1,401 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Scorebug Setup</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Sofia+Sans+Semi+Condensed:wght@400;600;800&display=swap" rel="stylesheet">
+<!-- PNG scorebug setup. In the app: pngedit.html?g=<graphic> (edit) or ?t=<sport> (new), Save writes it into the app.
+     On the designer site (no app server): open a PNG zip, set it up, Export a style file for the app's Import. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+  :root { --bg: #1A1823; --panel: #2B283A; --raised: #23212E; --red: #E40000; --blue: #00B7FF; --green: #00B13C; --yellow: #FCFF7A; --fg: #fff; --dim: #9a97ad; }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px 'Sofia Sans Semi Condensed', sans-serif; }
+  header { display: flex; gap: 12px; align-items: center; padding: 10px 16px; background: var(--panel); position: sticky; top: 0; z-index: 5; flex-wrap: wrap; }
+  h1 { font: italic 400 26px 'Bebas Neue'; letter-spacing: 1px; margin: 0; flex: 1; white-space: nowrap; }
+  h2 { font: italic 400 20px 'Bebas Neue'; letter-spacing: 1px; margin: 0 0 6px; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 460px; gap: 16px; padding: 16px; align-items: start; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+  .left { position: sticky; top: 70px; }
+  .stage { position: relative; width: 100%; background: repeating-conic-gradient(#3a3750 0 25%, #2f2c42 0 50%) 0 0 / 20px 20px; border-radius: 8px; overflow: hidden; cursor: crosshair; }
+  .stage iframe, .stage img, .stage .hit { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+  .stage iframe { pointer-events: none; }
+  .stage img { pointer-events: none; object-fit: fill; }
+  .mark { position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px; border: 2px solid var(--yellow); border-radius: 50%; pointer-events: none; box-shadow: 0 0 0 1px #000; }
+  .hint { color: var(--dim); font-size: 13px; margin: 6px 0 0; }
+  input, select, button { font: inherit; color: var(--fg); background: var(--raised); border: 1px solid #45415a; border-radius: 6px; padding: 4px 6px; min-width: 0; }
+  input[type=number] { width: 62px; }
+  input[type=color] { width: 36px; padding: 1px; height: 28px; }
+  button { cursor: pointer; font-weight: 800; }
+  button:hover { border-color: var(--blue); }
+  .save { background: var(--red); border-color: var(--red); padding: 6px 16px; }
+  .card { background: var(--raised); border-radius: 8px; padding: 8px; margin-top: 8px; border: 2px solid transparent; }
+  .card.sel { border-color: var(--yellow); }
+  .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 4px; }
+  .title { font-weight: 800; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .folder { color: var(--dim); font-weight: 400; }
+  .kind { font-size: 11px; font-weight: 800; color: var(--yellow); flex: none; }
+  .thumb { width: 64px; height: 28px; object-fit: contain; background: repeating-conic-gradient(#3a3750 0 25%, #2f2c42 0 50%) 0 0 / 8px 8px; border-radius: 4px; flex: none; }
+  .piece { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
+  .piece .nm { flex: 1; min-width: 0; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .off { opacity: .45; }
+  .tv { display: grid; grid-template-columns: auto 1fr; gap: 4px 8px; align-items: center; }
+  .tv label { color: var(--dim); }
+  pre { white-space: pre-wrap; margin: 6px 0 0; font-size: 12px; color: var(--dim); }
+  pre.err { color: var(--red); }
+  .filebtn { border: 1px solid #45415a; border-radius: 6px; padding: 4px 8px; cursor: pointer; font-weight: 800; background: var(--raised); }
+  .filebtn:hover { border-color: var(--blue); }
+  #start { max-width: 640px; margin: 40px auto; }
+  #start ol { line-height: 1.7; }
+</style>
+</head><body>
+<header>
+  <a id="back" href="index.html" style="color:var(--dim);text-decoration:none">← Sports</a>
+  <h1 id="h">Scorebug setup</h1>
+  <select id="sport" hidden title="Sport"></select>
+  <input id="title" placeholder="style name, e.g. Captains League bug" style="width:220px" hidden>
+  <label class="filebtn" id="openBtn" hidden>Open PNG zip or style file<input type="file" id="open" accept=".zip,.json" hidden></label>
+  <label>Reference <select id="refop"><option value="0">off</option><option value=".5" selected>50%</option><option value="1">100%</option></select></label>
+  <button id="auto" title="Match the pieces to the reference: picks options, stacking order, hidden pieces and finds the live text">Auto build from reference</button>
+  <button id="save" class="save">Save</button>
+</header>
+<section id="start" hidden>
+  <h2>Build a scorebug from PNG pieces</h2>
+  <ol>
+    <li>Export every piece as a full-frame PNG (1920×1080, transparent, in position), plus one <b>full bug for reference</b> PNG.
+      Put team/player options in folders (e.g. <i>Left teams</i>). Zip it.</li>
+    <li>Pick the sport and name the style above, then <b>Open PNG zip</b>. Auto build sets up what it can from the reference.</li>
+    <li>Check each piece, rename the <code>{text1}</code>… fields (e.g. <code>{awayScore}</code>), try the test values.</li>
+    <li><b>Export style file</b> and send it to the graphics op, who imports it in JM Graphics.
+      To keep working later, open that file here again.</li>
+  </ol>
+  <p class="hint">Fonts: use the font's PostScript name (e.g. Industry-Ultra). The preview uses fonts installed on this computer.</p>
+</section>
+<main id="main" hidden>
+  <div class="left">
+    <section>
+      <div class="stage" id="stage">
+        <iframe id="disp" src=""></iframe>
+        <img id="ref" alt="" hidden>
+        <div class="hit" id="hit"></div>
+        <div class="mark" id="mark" hidden></div>
+      </div>
+      <p class="hint" id="hint">Pick a text item on the right, then click here to place it. Its dot is where the text anchors (left/center/right edge, on the baseline).</p>
+      <pre id="log"></pre>
+    </section>
+    <section><h2>Test values</h2><div class="tv" id="tv"></div>
+      <p class="hint">Only for this preview. Try each team and condition to check every piece.</p></section>
+  </div>
+  <div>
+    <section>
+      <h2>Live text</h2>
+      <button id="addText">+ Add live text</button> <button id="addFixed" title="Text that never changes, like the / between two numbers">+ Add fixed text</button>
+      <div id="texts"></div>
+    </section>
+    <section>
+      <h2>Pieces <span class="folder">(top of the stack first)</span></h2>
+      <div id="pieces"></div>
+    </section>
+  </div>
+</main>
+<datalist id="fieldNames"></datalist>
+<datalist id="fontNames"></datalist>
+<script src="pngstyle.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+const Q = new URLSearchParams(location.search);
+let G = Q.get('g'), APP = false, images = {}, dirty = false, edit, built = { fields: {} }, sel = null, view = [0, 0, 1920, 1080], ready = false;
+
+const ROLES = { always: 'Always shown', pick: 'Option of a field', if: 'Shown when…', off: 'Not used' };
+const OPS = { truthy: 'is on', '!': 'is off', '=': '=', '!=': '≠', '>=': '≥', '<=': '≤', '>': '>', '<': '<' };
+const needsValue = op => !['truthy', '!'].includes(op);
+
+// Blocks: consecutive pieces from the same folder move and get set up together (a folder of team logos = one picker).
+function blocks() {
+  const out = [];
+  edit.items.forEach((it, i) => {
+    const last = out[out.length - 1];
+    if (it.k === 'img' && it.folder && last && last.folder === it.folder) last.idx.push(i);
+    else if (it.k === 'img') out.push({ folder: it.folder, idx: [i] });
+  });
+  return out;
+}
+
+function move(i, dir) {  // dir +1 = up the stack (drawn later)
+  const bs = blocks(), b = bs.findIndex(x => x.idx.includes(i)), o = bs[b + dir];
+  if (!o) return;
+  const [lo, hi] = dir > 0 ? [bs[b], o] : [o, bs[b]];
+  const a = lo.idx[0], z = hi.idx[hi.idx.length - 1];
+  const loItems = edit.items.slice(a, lo.idx[lo.idx.length - 1] + 1), hiItems = edit.items.slice(hi.idx[0], z + 1);
+  const between = edit.items.slice(lo.idx[lo.idx.length - 1] + 1, hi.idx[0]);  // text items sit outside blocks
+  edit.items.splice(a, z - a + 1, ...hiItems, ...between, ...loItems);
+  changed(true);
+}
+
+function renderPieces() {
+  const bs = blocks().reverse();
+  $('pieces').innerHTML = bs.map(b => {
+    const first = edit.items[b.idx[0]];
+    const title = b.folder || first.name;
+    const head = `
+      <div class="row">
+        <span class="title">${esc(title)} ${b.idx.length > 1 ? `<span class="folder">· ${b.idx.length} pieces</span>` : ''}</span>
+        <button data-mv="1" title="Up the stack">↑</button><button data-mv="-1" title="Down the stack">↓</button>
+      </div>
+      <div class="row">
+        <select data-k="role">${Object.entries(ROLES).map(([k, v]) => `<option value="${k}" ${first.role === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
+        <input data-k="field" list="fieldNames" placeholder="field, e.g. awayTeam" value="${esc(first.field)}" ${['pick', 'if'].includes(first.role) ? '' : 'hidden'} style="flex:1">
+        <select data-k="op" ${first.role === 'if' ? '' : 'hidden'}>${Object.entries(OPS).map(([k, v]) => `<option value="${k}" ${first.op === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
+      </div>`;
+    const showVal = first.role === 'pick' || (first.role === 'if' && needsValue(first.op));
+    const rows = b.idx.map(i => {
+      const it = edit.items[i];
+      return `<div class="piece" data-i="${i}"><img class="thumb" src="${images[it.src]}">
+        <span class="nm" title="${esc(it.name)}">${esc(it.name)}</span>
+        ${showVal ? `<input data-k="value" data-i="${i}" placeholder="${first.role === 'pick' ? 'option (* = fallback)' : 'value'}" value="${esc(it.value)}" style="width:150px">` : ''}</div>`;
+    }).join('');
+    return `<div class="card ${first.role === 'off' ? 'off' : ''}" data-b="${b.idx.join(',')}">${head}${rows}</div>`;
+  }).join('') || '<p class="hint">No pieces.</p>';
+  $('pieces').querySelectorAll('.card').forEach(card => {
+    const idx = card.dataset.b.split(',').map(Number);
+    card.querySelectorAll('[data-mv]').forEach(btn => btn.onclick = () => move(idx[0], +btn.dataset.mv));
+    card.querySelectorAll('[data-k]').forEach(inp => {
+      const k = inp.dataset.k;
+      inp.oninput = inp.onchange = () => {
+        if (k === 'value') edit.items[+inp.dataset.i].value = inp.value;
+        else idx.forEach(i => edit.items[i][k] = inp.value);  // role/field/op apply to the whole folder
+        changed(k !== 'value' && inp.tagName === 'SELECT');
+      };
+    });
+  });
+}
+
+function renderTexts() {
+  const ts = edit.items.map((it, i) => [it, i]).filter(([it]) => it.k === 'text');
+  $('texts').innerHTML = ts.map(([t, i]) => `
+    <div class="card ${sel === i ? 'sel' : ''}" data-i="${i}">
+      <div class="row"><span class="kind">${/\{\w+\}/.test(t.tpl) ? 'LIVE' : 'FIXED · always on'}</span>
+        <input data-k="tpl" value="${esc(t.tpl)}" placeholder="{awayScore} or fixed text like /" style="flex:1" title="Field in {braces} = live; no braces = fixed text that's always on">
+        <button data-del title="Delete">✕</button></div>
+      <div class="row">
+        <input data-k="font" list="fontNames" value="${esc(t.font)}" placeholder="font" style="width:150px">
+        <input data-k="size" type="number" value="${t.size}" title="Size">
+        <input data-k="color" type="color" value="${esc(t.color)}" title="Color">
+        <select data-k="anchor" title="Alignment: where the dot is">${[['start', 'Left'], ['middle', 'Center'], ['end', 'Right']].map(([v, l]) => `<option value="${v}" ${t.anchor === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+        <label><input data-k="caps" type="checkbox" ${t.caps ? 'checked' : ''}> CAPS</label>
+      </div>
+      <div class="row">x <input data-k="x" type="number" value="${t.x}"> y <input data-k="y" type="number" value="${t.y}">
+        max width <input data-k="maxw" type="number" value="${t.maxw || ''}" placeholder="—" title="Long values squeeze to fit (names)"></div>
+    </div>`).join('') || '<p class="hint">No live text yet.</p>';
+  $('texts').querySelectorAll('.card').forEach(card => {
+    const i = +card.dataset.i, t = edit.items[i];
+    card.onclick = e => { if (sel !== i) { sel = i; renderTexts(); mark(); } };
+    card.querySelector('[data-del]').onclick = e => { e.stopPropagation(); edit.items.splice(i, 1); sel = null; changed(true); };
+    card.querySelectorAll('[data-k]').forEach(inp => inp.oninput = () => {
+      const k = inp.dataset.k;
+      t[k] = inp.type === 'checkbox' ? inp.checked : inp.type === 'number' ? (inp.value === '' ? null : +inp.value) : inp.value;
+      if (k === 'tpl') { seedSamples(); card.querySelector('.kind').textContent = /\{\w+\}/.test(t.tpl) ? 'LIVE' : 'FIXED · always on'; }
+      changed(false); mark();
+    });
+  });
+}
+
+function seedSamples() {  // new text field: give the preview something to show
+  for (const it of edit.items) if (it.k === 'text') for (const [, f] of it.tpl.matchAll(/\{(\w+)\}/g)) edit.sample[f] ??= '0';
+}
+
+function renderValues() {
+  const f = built.fields;
+  $('tv').innerHTML = Object.entries(f).map(([k, d]) => {
+    const v = edit.sample[k] ?? '';
+    const input = d.type === 'choice' ? `<select data-f="${k}"><option value="">(none)</option>${d.options.map(o => `<option ${o === v ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>`
+      : d.type === 'bool' ? `<input type="checkbox" data-f="${k}" ${v ? 'checked' : ''}>`
+      : `<input data-f="${k}" value="${esc(v)}">`;
+    return `<label>${esc(k)}</label>${input}`;
+  }).join('') || '<span class="hint">Set what the pieces and text do, and their fields show up here.</span>';
+  $('tv').querySelectorAll('[data-f]').forEach(inp => inp.oninput = inp.onchange = () => {
+    edit.sample[inp.dataset.f] = inp.type === 'checkbox' ? inp.checked : inp.value;
+    send();
+  });
+}
+
+let timer;
+function changed(structure) {
+  if (structure) { renderPieces(); renderTexts(); }
+  clearTimeout(timer); timer = setTimeout(rebuild, 120);
+  dirty = true; $('save').textContent = APP ? 'Save' : 'Export style file';
+}
+
+function rebuild() {
+  built = PNGStyle.build(edit);
+  for (const [k, d] of Object.entries(built.fields))  // defaults that show every piece
+    if (edit.sample[k] === undefined) edit.sample[k] = d.type === 'choice' ? d.options[0] : d.type === 'bool' ? true : '0';
+  renderValues(); send();
+}
+
+function send() {  // the preview is display.html itself, fed directly; image srcs become real URLs
+  const real = ns => ns.map(n => ({ ...n, ...(n.src && { src: images[n.src] }), ...(n.children && { children: real(n.children) }) }));
+  if (ready && built.nodes) $('disp').contentWindow.postMessage({ name: 'preview', spec: { ...built, nodes: real(built.nodes) },
+    values: edit.sample, view: view.join(' ') }, '*');
+}
+
+function fitView() {  // zoom the preview to the bug, not the whole 1920×1080 frame
+  const all = edit.items.filter(i => i.k === 'img').concat(edit.ref || []);
+  if (!all.length) return;
+  const pad = 24, x0 = Math.max(0, Math.min(...all.map(i => i.x)) - pad), y0 = Math.max(0, Math.min(...all.map(i => i.y)) - pad);
+  const x1 = Math.min(edit.width, Math.max(...all.map(i => i.x + i.w)) + pad), y1 = Math.min(edit.height, Math.max(...all.map(i => i.y + i.h)) + pad);
+  view = [x0, y0, x1 - x0, y1 - y0];
+  $('stage').style.aspectRatio = `${view[2]} / ${view[3]}`;
+  if (edit.ref) Object.assign($('ref').style, {  // place the reference in view coordinates
+    left: `${(edit.ref.x - x0) / view[2] * 100}%`, top: `${(edit.ref.y - y0) / view[3] * 100}%`,
+    width: `${edit.ref.w / view[2] * 100}%`, height: `${edit.ref.h / view[3] * 100}%`, inset: 'auto' });
+}
+
+function mark() {
+  const t = edit.items[sel];
+  $('mark').hidden = !t || t.k !== 'text';
+  if (t && t.k === 'text') Object.assign($('mark').style, { left: `${(t.x - view[0]) / view[2] * 100}%`, top: `${(t.y - view[1]) / view[3] * 100}%` });
+}
+
+$('hit').onclick = e => {
+  const t = edit.items[sel];
+  if (!t || t.k !== 'text') return $('hint').animate([{ color: '#FCFF7A' }, { color: '' }], 900);
+  const r = $('hit').getBoundingClientRect();
+  t.x = Math.round(view[0] + (e.clientX - r.left) / r.width * view[2]);
+  t.y = Math.round(view[1] + (e.clientY - r.top) / r.height * view[3]);
+  renderTexts(); mark(); changed(false);
+};
+
+const defaultFont = () => edit.items.filter(i => i.k === 'text').pop()?.font || $('fontNames').options[0]?.value || 'BebasNeue-Regular';
+const addText = tpl => {
+  edit.items.push({ k: 'text', tpl, x: Math.round(view[0] + view[2] / 2), y: Math.round(view[1] + view[3] / 2),
+    size: 48, font: defaultFont(), color: '#ffffff', anchor: 'middle', caps: true, maxw: null });
+  sel = edit.items.length - 1;
+  seedSamples(); changed(true); mark();
+};
+$('addText').onclick = () => addText('{awayScore}');
+$('addFixed').onclick = () => addText('/');
+
+$('refop').onchange = () => { $('ref').style.opacity = $('refop').value; $('ref').hidden = !edit?.ref || $('refop').value === '0'; };
+const say = (msg, err) => { $('log').className = err ? 'err' : ''; $('log').textContent = msg; };
+
+// Start editing: a fresh zip, a style file, or (app) a saved style
+async function begin(e, imgs, msg) {
+  edit = e; images = imgs; sel = null;
+  $('start').hidden = true; $('main').hidden = $('save').hidden = false;
+  if (edit.ref) { $('ref').src = images[edit.ref.src]; $('refop').onchange(); }
+  $('refop').parentNode.hidden = $('auto').hidden = !edit.ref;
+  fitView(); renderPieces(); renderTexts(); mark();
+  if (!$('disp').src) $('disp').src = 'display.html?edit=1';
+  rebuild();
+  if (msg) say(msg);
+}
+
+$('auto').onclick = async () => {
+  $('auto').textContent = 'Building…';
+  try {
+    await begin(await PNGStyle.autobuild(edit, images, defaultFont()), images,
+      'Auto build done: rename the {text1}… fields and check each piece, then ' + (APP ? 'Save.' : 'Export.'));
+    changed(false);
+  } catch (e) { say(e.message, true); }
+  $('auto').textContent = 'Auto build from reference';
+};
+
+$('open').onchange = async () => {
+  const f = $('open').files[0];
+  if (!f) return;
+  $('openBtn').firstChild.textContent = 'Opening…';
+  try {
+    if (/\.json$/i.test(f.name)) {  // a style file: carry on where it was exported
+      const d = JSON.parse(await f.text());
+      if (d.jmStyle !== 1) throw new Error('Not a JM style file');
+      if ($('sport').querySelector(`option[value="${d.sport}"]`)) $('sport').value = d.sport;
+      $('title').value = d.title || '';
+      await begin(d.edit, d.images, `Opened ${f.name}.`);
+    } else {
+      const { edit: e, images: imgs } = await PNGStyle.unpackZip(f);
+      if (!$('title').value) $('title').value = f.name.replace(/\.zip$/i, '');
+      await begin(e, imgs);
+      if (e.ref) await $('auto').onclick();
+      else say('No "reference" PNG in the zip, so no auto build: set up each piece below.');
+    }
+    dirty = true;
+  } catch (e) { say(e.message, true); }
+  $('openBtn').firstChild.textContent = 'Open PNG zip or style file';
+  $('open').value = '';
+};
+
+async function dataUrls() {  // the app's saved images are URLs; a style file carries the pictures inside
+  const out = {};
+  for (const [k, v] of Object.entries(images)) out[k] = v.startsWith('data:') ? v :
+    await new Promise(async ok => { const r = new FileReader(); r.onload = () => ok(r.result); r.readAsDataURL(await (await fetch(v)).blob()); });
+  return out;
+}
+
+$('save').onclick = async () => {
+  if (!edit) return;
+  const sport = G ? G.split('-')[0] : $('sport').value, title = $('title').value.trim();
+  if (!G && !title) { $('title').focus(); return say('Name the style first.', true); }
+  $('save').textContent = APP ? 'Saving…' : 'Exporting…';
+  try {
+    const file = PNGStyle.toStyleFile(sport, title, edit, await dataUrls());
+    if (!APP) {
+      const a = Object.assign(document.createElement('a'), { download: `${sport}-${PNGStyle.slug(title)}.json`,
+        href: URL.createObjectURL(new Blob([JSON.stringify(file)], { type: 'application/json' })) });
+      a.click();
+      dirty = false; $('save').textContent = 'Exported ✓';
+      return say(`Saved ${a.download} to your Downloads. Send it to the graphics op; open it here again to keep working.`);
+    }
+    const r = await fetch(`/api/import-style${G ? '?g=' + encodeURIComponent(G) : ''}`, { method: 'POST', body: JSON.stringify(file) });
+    const out = await r.json().catch(() => ({ error: 'server error' }));
+    if (!r.ok || out.error) throw new Error(out.error || 'HTTP ' + r.status);
+    dirty = false; $('save').textContent = 'Saved ✓'; say(out.log);
+    if (!G) { G = out.name; history.replaceState(null, '', `pngedit.html?g=${encodeURIComponent(G)}`); }
+  } catch (e) { $('save').textContent = APP ? 'Save' : 'Export style file'; say('Not saved: ' + e.message, true); }
+};
+
+addEventListener('message', e => { if (e.data === 'display-ready') { ready = true; send(); } });
+addEventListener('beforeunload', e => { if (dirty) e.preventDefault(); });
+
+(async () => {
+  const tours = await fetch('tournaments.json', { cache: 'no-store' }).then(r => r.ok ? r.json() : null).catch(() => null);
+  APP = !!tours;  // no app server = the designer site
+  const site = APP ? null : await fetch('designer.json').then(r => r.json()).catch(() => ({ sports: [] }));
+  const sports = APP ? tours.tournaments.map(t => ({ id: t.id, label: t.name })) : site.sports;
+  $('sport').innerHTML = sports.map(s => `<option value="${esc(s.id)}">${esc(s.label)}</option>`).join('');
+  const sport = G ? G.split('-')[0] : Q.get('t') || sports[0]?.id;
+  $('sport').value = sport;
+  // Field names the sport's other styles use, so the Warehouse feeds every style the same way
+  let names = [], fonts = [];
+  if (APP) {
+    const tour = tours.tournaments.find(t => t.id === sport);
+    names = (await Promise.all((tour?.graphics || []).filter(n => n !== G).map(n =>
+      fetch(`graphics/${n}/graphic.json`).then(r => r.json()).then(s => Object.keys(s.fields), () => [])))).flat();
+    const listing = await fetch('fonts/').then(r => r.text()).catch(() => '');  // the server's folder listing
+    fonts = [...listing.matchAll(/href="([^"]+)\.(?:otf|ttf|woff2)"/g)].map(m => decodeURIComponent(m[1]));
+  } else {
+    names = sports.flatMap(s => s.fields || []);
+    fonts = site.fonts || [];
+  }
+  $('fieldNames').innerHTML = [...new Set([...names, 'awayTeam', 'homeTeam', 'awayScore', 'homeScore', 'inning', 'topOrBottom', 'outs'])]
+    .map(n => `<option value="${esc(n)}">`).join('');
+  $('fontNames').innerHTML = [...new Set(fonts)].map(f => `<option value="${esc(f)}">`).join('');
+  $('save').textContent = APP ? 'Save' : 'Export style file';
+  $('back').hidden = !APP;
+  if (G) {  // the app, an existing style
+    const spec = await fetch(`graphics/${G}/graphic.json`, { cache: 'no-store' }).then(r => r.json());
+    if (!spec.edit) { document.body.innerHTML = '<p style="padding:20px">This scorebug came from a PSD: change it in Photoshop and re-import.</p>'; return; }
+    $('h').textContent = `Set up: ${spec.title || G}`;
+    const imgs = {};
+    for (const it of [...spec.edit.items, spec.edit.ref].filter(i => i && i.src)) imgs[it.src] = `graphics/${G}/${it.src}`;
+    return begin(spec.edit, imgs);
+  }
+  $('h').textContent = APP ? 'New scorebug style (PNG pieces)' : 'JM Scorebug Builder';
+  $('sport').hidden = $('title').hidden = $('openBtn').hidden = false;
+  $('sport').disabled = APP;  // the app opened this from a sport card
+  $('start').hidden = false;
+  $('refop').parentNode.hidden = $('auto').hidden = $('save').hidden = true;  // until a pack is open
+})();
+</script>
+</body></html>

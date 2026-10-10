@@ -1,0 +1,218 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>JM Graphics Display</title>
+<!-- OBS Browser Source: display.html?t=<tournament id>   (add &only=<graphic> for a source sized to one graphic) -->
+<style>
+  html, body { margin: 0; background: transparent; overflow: hidden; }
+  svg.gfx { position: fixed; inset: 0; width: 100vw; height: 100vh; display: none; }
+  svg.gfx g, svg.gfx image, svg.gfx text { transform-box: fill-box; transform-origin: center; }
+</style>
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-database-compat.js"></script>
+</head><body>
+<script>
+const NS = 'http://www.w3.org/2000/svg';
+const P = new URLSearchParams(location.search);
+const PREVIEW = P.has('preview') && P.has('only');
+const TOPIC = P.get('t') || 'default';  // tournament id: each tournament has its own on-air state
+firebase.initializeApp({ apiKey: 'AIzaSyBG2PS2muH4i27HefuLeBnZWW-TZ5dkMCw', databaseURL: 'https://pinpoint-abf21-default-rtdb.firebaseio.com' });
+
+const EASE = 'cubic-bezier(.2,1.25,.35,1)';  // slight overshoot
+// In-animations, played backwards for out. Each top-level PSD layer/group animates on its own, staggered.
+const ANIMS = {
+  wipe:  [{ clipPath: 'inset(0 100% 0 0)' }, { clipPath: 'inset(0 0 0 0)' }],
+  slide: [{ transform: 'translateY(80px)', opacity: 0 }, { transform: 'none', opacity: 1 }],
+  pop:   [{ transform: 'scale(.3)', opacity: 0 }, { transform: 'none', opacity: 1 }],
+  flip:  [{ transform: 'scaleY(0)' }, { transform: 'none' }],
+  drop:  [{ transform: 'translateY(-120px)', opacity: 0 }, { transform: 'none', opacity: 1 }],
+  fade:  [{ opacity: 0 }, { opacity: 1 }],
+};
+const STAGGER = 90, DUR = 550;
+
+const G = {};       // name -> { svg, units, texts, shows }
+let state = { values: {}, on: {}, anim: {} };
+
+function el(tag, attrs, parent) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  parent && parent.appendChild(e);
+  return e;
+}
+
+function build(name, spec) {
+  const svg = el('svg', { class: 'gfx', viewBox: `0 0 ${spec.width} ${spec.height}` }, document.body);
+  const g = G[name] = { svg, units: [], texts: [], shows: [], slots: [] };
+  const draw = (n, parent) => {
+    let e;
+    if (n.t === 'img') {
+      const src = n.src.includes('/') ? n.src : `graphics/${name}/${n.src}`;  // the setup page sends full URLs
+      e = el('image', { href: src, x: n.x, y: n.y, width: n.w, height: n.h }, parent);
+      if (n.field) g.slots.push({ e, n, src });  // logo slot filled from a URL field
+    }
+    else if (n.t === 'text') {
+      e = el('text', { x: n.x, y: n.y, 'text-anchor': n.anchor, fill: n.color, 'font-size': n.size,
+        'letter-spacing': n.track * n.size, style: `font-family:"${n.font}",sans-serif;${fallbackStyle(n.font)}` }, parent);
+      g.texts.push({ e, n });
+    } else {
+      e = el('g', {}, parent);
+      n.children.forEach(c => draw(c, e));
+      // a child named "*" is the picker's fallback: shown when no other child matches the value
+      if (n.pick) n.children.forEach((c, i) => e.childNodes[i].__pick = { f: n.pick, opts: n.children.map(c => c.opt).filter(o => o !== '*') });
+    }
+    if (n.if || n.opt != null) g.shows.push({ e, n });
+    return e;
+  };
+  spec.nodes.forEach(n => g.units.push(draw(n, svg)));
+}
+
+// If the font file is missing, at least get the weight/slant right on the stand-in.
+const fallbackStyle = f => `font-weight:${/black|ultra|heavy/i.test(f) ? 900 : /bold/i.test(f) ? 700 : /demi|semi/i.test(f) ? 600 : 400};` +
+  (/italic|oblique/i.test(f) ? 'font-style:italic;' : '');
+
+const truthy = v => !(v == null || v === false || v === '' || v === 0 || v === '0' || v === 'false');
+function test(c, v) {
+  switch (c.op) {
+    case 'truthy': return truthy(v);
+    case '!':  return !truthy(v);
+    case '=':  return String(v ?? '').toLowerCase() === c.v.toLowerCase();
+    case '!=': return String(v ?? '').toLowerCase() !== c.v.toLowerCase();
+    case '>=': return +v >= +c.v;
+    case '<=': return +v <= +c.v;
+    case '>':  return +v > +c.v;
+    case '<':  return +v < +c.v;
+  }
+}
+
+// Value -> picker child. Exact name wins, else a child named with part of it ("Rotten" for "Forgotten Rotten").
+const norm = s => String(s ?? '').toLowerCase().replace(/['’]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+function pickOpt(opts, v) {
+  const nv = norm(v);
+  if (!nv) return null;
+  return opts.find(o => norm(o) === nv) ||
+    opts.filter(o => norm(o) && (` ${nv} `.includes(` ${norm(o)} `) || ` ${norm(o)} `.includes(` ${nv} `)))
+        .sort((a, b) => norm(b).length - norm(a).length)[0] || null;
+}
+
+function fit({ e, n }) {  // paragraph-box text: squeeze long values into the designer's box
+  if (!n.maxw) return;
+  e.removeAttribute('textLength');
+  if (e.getComputedTextLength() > n.maxw) { e.setAttribute('textLength', n.maxw); e.setAttribute('lengthAdjust', 'spacingAndGlyphs'); }
+}
+
+// Ball In Play (cricket) over: values.over = "0,1,wd,wd2,w" (this over, oldest first) becomes
+// ball1..ball8 + ball1Sub..ball8Sub for the designer's circle layers, and ballCount = 6 circles +1 per wide (max 8).
+// A 3rd+ wide keeps 8 circles and shows the latest 8 deliveries (oldest drops off the front).
+// Tokens: 0 dot · 1-6 runs · wd wide · wd1-wd6 wide + runs · w wicket.
+function withOver(v) {
+  if (v.over == null) return v;
+  const balls = String(v.over).split(',').map(b => b.trim().toLowerCase()).filter(Boolean);
+  const out = { ...v, ballCount: Math.min(8, 6 + balls.filter(b => b.startsWith('wd')).length) };
+  const shown = balls.slice(-8);
+  for (let i = 1; i <= 8; i++) {
+    const b = shown[i - 1] || '';
+    out['ball' + i] = b === '0' ? '•' : b === 'w' ? 'W' : b.startsWith('wd') ? 'WIDE' : b;
+    out['ball' + i + 'Sub'] = b.startsWith('wd') ? b.slice(2) : '';
+  }
+  return out;
+}
+
+function apply(first) {
+  const vals = withOver(state.values || {});
+  for (const [name, g] of Object.entries(G)) {
+    const live = !first && g.svg.style.display === 'block';
+    for (const t of g.texts) {
+      let s = t.n.tpl.replace(/\{(\w+)\}/g, (_, f) => vals[f] ?? '');
+      if (t.n.caps) s = s.toUpperCase();
+      if (t.e.textContent === s) continue;
+      if (live) {  // value changed on air: flip it over
+        t.e.animate([{ transform: 'none' }, { transform: 'scaleY(0)' }], { duration: 120, easing: 'ease-in' }).onfinish = () => {
+          t.e.textContent = s; fit(t);
+          t.e.animate([{ transform: 'scaleY(0)' }, { transform: 'none' }], { duration: 260, easing: EASE });
+        };
+      } else { t.e.textContent = s; fit(t); }
+    }
+    let refit = false;
+    for (const { e, n, src } of g.slots) {  // no/invalid URL: keep the designer's placeholder art
+      const v = String(vals[n.field] ?? '');
+      const href = /^https?:\/\//.test(v) ? v : src;
+      if (e.getAttribute('href') !== href) e.setAttribute('href', href);
+    }
+    for (const { e, n } of g.shows) {
+      const want = (!n.if || test(n.if, vals[n.if.f])) &&
+        (n.opt == null || pickOpt(e.__pick.opts, vals[e.__pick.f]) === (n.opt === '*' ? null : n.opt));
+      const shown = e.style.display !== 'none';
+      if (want === shown) continue;
+      if (want) {
+        e.style.display = '';
+        refit = true;  // text measured while hidden reads as 0 wide
+        if (live) e.animate(ANIMS.pop, { duration: 350, easing: EASE });
+      } else if (live) e.animate(ANIMS.fade, { duration: 200, direction: 'reverse' }).onfinish = () => e.style.display = 'none';
+      else e.style.display = 'none';
+    }
+    if (refit) g.texts.forEach(fit);
+    take(name, !!(state.on || {})[name], first);
+  }
+}
+
+// Control's preview plays IN/OUT like OBS, but leaves an OUT style as a faint ghost so the op still sees which one is picked.
+const hide = g => PREVIEW ? Object.assign(g.svg.style, { display: 'block', opacity: .25 }) : g.svg.style.display = 'none';
+
+function take(name, on, first) {
+  const g = G[name];
+  if (first && !on) { g.on = false; return hide(g); }  // starts OUT: hidden (ghost in control's preview)
+  if (on === !!g.on) return;
+  g.on = on;
+  g.anims && g.anims.forEach(a => a.cancel());
+  const kf = ANIMS[(state.anim || {})[name]] || ANIMS.wipe;
+  if (on) { Object.assign(g.svg.style, { display: 'block', opacity: 1 }); g.texts.forEach(fit); }
+  if (first) { if (!on) hide(g); return; }
+  const units = on ? g.units : [...g.units].reverse();
+  g.anims = units.map((u, i) => u.animate(kf, { duration: DUR, delay: i * STAGGER, easing: on ? EASE : 'ease-in',
+    direction: on ? 'normal' : 'reverse', fill: 'both' }));
+  Promise.all(g.anims.map(a => a.finished)).then(() => {
+    if (!g.on) hide(g);
+    g.anims.forEach(a => a.cancel()); g.anims = null;  // drop fill so later effects start clean
+  }, () => {});
+}
+
+const fontsAdded = new Set();
+function loadFonts(fonts) {
+  const css = [...fonts].filter(f => !fontsAdded.has(f)).map(f => (fontsAdded.add(f),
+    `@font-face{font-family:"${f}";src:local("${f}"),url(fonts/${f}.woff2),url(fonts/${f}.otf),url(fonts/${f}.ttf)}`)).join('');
+  document.head.appendChild(Object.assign(document.createElement('style'), { textContent: css }));
+}
+
+// pngedit.html (PNG scorebug setup) drives this page directly: {name, spec, values, view}, no Firebase.
+if (P.has('edit')) {
+  addEventListener('message', ({ data: d }) => {
+    if (!d || !d.spec) return;
+    for (const k in G) { G[k].svg.remove(); delete G[k]; }
+    loadFonts(d.spec.fonts);
+    build(d.name, d.spec);
+    G[d.name].svg.setAttribute('viewBox', d.view);
+    state = { values: d.values, on: { [d.name]: true } };
+    apply(true);
+    d.spec.fonts.forEach(f => document.fonts.load(`10px "${f}"`).then(() => G[d.name]?.texts.forEach(fit), () => {}));
+  });
+  parent.postMessage('display-ready', '*');
+} else (async () => {
+  const only = P.get('only');
+  const tour = (await (await fetch('tournaments.json', { cache: 'no-store' })).json()).tournaments.find(t => t.id === TOPIC);
+  const names = only ? [only] : tour ? tour.graphics : [];
+  const specs = await Promise.all(names.map(n => fetch(`graphics/${n}/graphic.json`, { cache: 'no-store' }).then(r => r.json())));
+  const fonts = new Set(specs.flatMap(s => s.fonts));
+  loadFonts(fonts);
+  specs.forEach((s, i) => build(names[i], s));
+  let first = true, reloadSeen = null;  // null = no value read yet (state.reload itself starts undefined)
+  firebase.database().ref(`gfx/${TOPIC}`).on('value', snap => {
+    state = snap.val() || {};
+    // control.html "Reload display": pick up new code/graphics without touching OBS. State is in Firebase,
+    // so the bug comes back exactly as it was.
+    if (reloadSeen !== null && (state.reload ?? 0) !== reloadSeen) return location.reload();
+    reloadSeen = state.reload ?? 0;
+    apply(first); first = false;
+  });
+  fonts.forEach(f => document.fonts.load(`10px "${f}"`).catch(() => {}));  // missing font file = stand-in, not an error
+  document.fonts.ready.then(() => Object.values(G).forEach(g => g.texts.forEach(fit)));
+})();
+</script>
+</body></html>

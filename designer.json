@@ -1,0 +1,100 @@
+{
+ "sports": [
+  {
+   "id": "bip",
+   "label": "Ball In Play",
+   "fields": [
+    "ball1",
+    "ball1Sub",
+    "ball2",
+    "ball2Sub",
+    "ball3",
+    "ball3Sub",
+    "ball4",
+    "ball4Sub",
+    "ball5",
+    "ball5Sub",
+    "ball6",
+    "ball6Sub",
+    "ball7",
+    "ball7Sub",
+    "ball8",
+    "ball8Sub",
+    "ballCount",
+    "battingTeam",
+    "bowler",
+    "bowlerFigures",
+    "bowlerOvers",
+    "bowlingTeam",
+    "firstScore",
+    "firstTeam",
+    "inning",
+    "nonStriker",
+    "nonStrikerBalls",
+    "nonStrikerRuns",
+    "outs",
+    "overs",
+    "secondScore",
+    "secondTeam",
+    "situation",
+    "striker",
+    "strikerBalls",
+    "strikerRuns"
+   ]
+  },
+  {
+   "id": "blitzball",
+   "label": "Blitzball",
+   "fields": [
+    "awayScore",
+    "awayTeam",
+    "balls",
+    "homeScore",
+    "homeTeam",
+    "inning",
+    "outs",
+    "pitchCount",
+    "pitcherName",
+    "runner1B",
+    "runner2B",
+    "runner3B",
+    "strikes",
+    "topOrBottom"
+   ]
+  },
+  {
+   "id": "floorball",
+   "label": "Floorball",
+   "fields": []
+  },
+  {
+   "id": "golfball",
+   "label": "Golfball",
+   "fields": [
+    "Shots",
+    "ShotsRemaining",
+    "awayScore",
+    "awayTeam",
+    "duckTeam",
+    "ducks",
+    "homeScore",
+    "homeTeam",
+    "inning",
+    "topOrBottom"
+   ]
+  },
+  {
+   "id": "curling",
+   "label": "Curling",
+   "fields": []
+  },
+  {
+   "id": "wallball",
+   "label": "Wall Ball",
+   "fields": []
+  }
+ ],
+ "fonts": [
+  "BebasNeue-Regular"
+ ]
+}
