@@ -75,7 +75,7 @@
   <div class="left">
     <section>
       <div class="stage" id="stage">
-        <iframe id="disp" src=""></iframe>
+        <iframe id="disp"></iframe>
         <img id="ref" alt="" hidden>
         <div class="hit" id="hit"></div>
         <div class="mark" id="mark" hidden></div>
@@ -287,7 +287,7 @@ async function begin(e, imgs, msg) {
   if (edit.ref) { $('ref').src = images[edit.ref.src]; $('refop').onchange(); }
   $('refop').parentNode.hidden = $('auto').hidden = !edit.ref;
   fitView(); renderPieces(); renderTexts(); mark();
-  if (!$('disp').src) $('disp').src = 'display.html?edit=1';
+  if (!$('disp').getAttribute('src')) $('disp').src = 'display.html?edit=1';
   rebuild();
   if (msg) say(msg);
 }
