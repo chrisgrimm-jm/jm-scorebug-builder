@@ -175,9 +175,9 @@ function take(name, on, first) {
 }
 
 const fontsAdded = new Set();
-function loadFonts(fonts) {
+function loadFonts(fonts, urls = {}) {  // urls: the setup page's fonts (zip fonts as data URLs)
   const css = [...fonts].filter(f => !fontsAdded.has(f)).map(f => (fontsAdded.add(f),
-    `@font-face{font-family:"${f}";src:local("${f}"),url(fonts/${f}.woff2),url(fonts/${f}.otf),url(fonts/${f}.ttf)}`)).join('');
+    `@font-face{font-family:"${f}";src:${urls[f] ? `url(${urls[f]})` : `local("${f}"),url(fonts/${f}.woff2),url(fonts/${f}.otf),url(fonts/${f}.ttf)`}}`)).join('');
   document.head.appendChild(Object.assign(document.createElement('style'), { textContent: css }));
 }
 
@@ -186,7 +186,7 @@ if (P.has('edit')) {
   addEventListener('message', ({ data: d }) => {
     if (!d || !d.spec) return;
     for (const k in G) { G[k].svg.remove(); delete G[k]; }
-    loadFonts(d.spec.fonts);
+    loadFonts(d.spec.fonts, d.fonts);
     build(d.name, d.spec);
     G[d.name].svg.setAttribute('viewBox', d.view);
     state = { values: d.values, on: { [d.name]: true } };

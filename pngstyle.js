@@ -8,12 +8,33 @@
 //   any other folder of 2+ PNGs   -> options too, field guessed by auto build or named by the designer
 //   [field] [!f] [f=x] [f>=n] in a name -> shown only when true, same as PSD layers
 //   a numeric prefix ("01 bg.png") sets the stacking order, else bigger pieces go underneath
+//   .otf/.ttf files anywhere in the zip -> the bug's fonts: exact names, exact text sizes, carried to the app
 const PNGStyle = (() => {
   const TEXT = /\{(\w+)\}/g, COND = /\[(!?)(\w+)\s*(>=|<=|!=|=|>|<)?\s*([^\]]*?)\s*\]/;
   const MATCH = 40;  // max channel difference for a pixel to count as "same as the reference"
   const words = s => s.replace(/\[.*?\]|\{.*?\}/g, ' ').split(/\s+/).filter(Boolean);
   const prefix = s => { const m = s.match(/^\s*(\d+)/); return m ? +m[1] : 1e6; };
   const slug = s => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+  // PostScript name from a font file's 'name' table (id 6): what text layers and display.html call the font.
+  // Same as server.py ps_name().
+  function psName(buf) {
+    const v = new DataView(buf), tag = o => String.fromCharCode(...new Uint8Array(buf, o, 4));
+    if (!['OTTO', 'true', '\0\x01\0\0'].includes(tag(0))) return null;
+    for (let i = 0; i < v.getUint16(4); i++) {
+      const r = 12 + 16 * i;
+      if (tag(r) !== 'name') continue;
+      const t = v.getUint32(r + 8), count = v.getUint16(t + 2), strings = t + v.getUint16(t + 4);
+      for (let j = 0; j < count; j++) {
+        const e = t + 6 + 12 * j, pid = v.getUint16(e), len = v.getUint16(e + 8), off = strings + v.getUint16(e + 10);
+        if (v.getUint16(e + 6) !== 6) continue;
+        const bytes = new Uint8Array(buf, off, len);
+        return pid === 0 || pid === 3 ? String.fromCharCode(...Array.from({ length: len / 2 }, (_, k) => v.getUint16(off + 2 * k)))
+          : String.fromCharCode(...bytes);
+      }
+    }
+    return null;
+  }
 
   function guessField(name) {  // 'Left teams' -> awayTeam, 'Right teams' -> homeTeam, else camelCase
     const w = words(name.toLowerCase());
@@ -84,11 +105,18 @@ const PNGStyle = (() => {
     return ctx.getImageData(0, 0, w, h).data;
   }
 
-  // Zip of full-frame PNGs -> { edit, images: {src: dataURL} }. Needs JSZip on the page.
+  const b64 = buf => { let s = ''; const u = new Uint8Array(buf); for (let i = 0; i < u.length; i += 32768) s += String.fromCharCode(...u.subarray(i, i + 32768)); return btoa(s); };
+
+  // Zip of full-frame PNGs (+ fonts) -> { edit, images: {src: dataURL}, fonts: {name: dataURL} }. Needs JSZip on the page.
   async function unpackZip(file) {
     const zip = await JSZip.loadAsync(file).catch(() => { throw new Error('That is not a .zip of PNGs'); });
-    let files = Object.values(zip.files).filter(f => !f.dir && /\.png$/i.test(f.name) && !f.name.includes('__MACOSX') &&
-      !f.name.split('/').pop().startsWith('.'));
+    const real = Object.values(zip.files).filter(f => !f.dir && !f.name.includes('__MACOSX') && !f.name.split('/').pop().startsWith('.'));
+    const fonts = {};  // PostScript name -> data URL
+    for (const f of real.filter(f => /\.(otf|ttf)$/i.test(f.name))) {
+      const buf = await f.async('arraybuffer'), name = psName(buf);
+      if (name && /^[\w .-]+$/.test(name)) fonts[name] = 'data:font/' + (/\.otf$/i.test(f.name) ? 'otf' : 'ttf') + ';base64,' + b64(buf);
+    }
+    let files = real.filter(f => /\.png$/i.test(f.name));
     if (!files.length) throw new Error('No PNGs in that zip');
     if (files.length > 400) throw new Error(`${files.length} PNGs: more than 400 looks like the wrong zip`);
     const parts = files.map(f => f.name.split('/'));
@@ -131,12 +159,13 @@ const PNGStyle = (() => {
     const cmp = (a, b) => key(a)[0] - key(b)[0] || key(a)[1] - key(b)[1];
     const groups = [...byFolder.values()].map(k => k.sort(cmp)).sort((a, b) => cmp(a[0], b[0]));  // folder stays together
     const [width, height] = size || [1920, 1080];
-    return { edit: { items: groups.flat(), ref, sample: {}, width, height }, images };
+    return { edit: { items: groups.flat(), ref, sample: {}, width, height }, images, fonts };
   }
 
   // Work the setup out from the reference: which option each folder shows, what's hidden, what sits on top of what,
   // and live text wherever the reference has something no piece explains. images: {src: url or dataURL}.
-  async function autobuild(edit, images, defaultFont = 'BebasNeue-Regular') {
+  // capRatio: the font's digit height / font size (the page measures it with the real font); 0.7 suits Bebas-like faces.
+  async function autobuild(edit, images, defaultFont = 'BebasNeue-Regular', capRatio = 0.7) {
     const ref = edit.ref;
     if (!ref) return edit;
     edit = structuredClone(edit);
@@ -262,7 +291,7 @@ const PNGStyle = (() => {
         const med = a => a.sort((x, y) => x - y)[a.length >> 1];
         sample[`text${i + 1}`] = '0';
         return { k: 'text', tpl: `{text${i + 1}}`, x: X0 + ((x0 + x1) >> 1), y: Y0 + y1,
-          size: Math.round((y1 - y0) / 0.7),  // ponytail: cap height ~0.7em (Bebas-like); tweak per font
+          size: Math.round((y1 - y0) / capRatio),
           font: defaultFont, color: '#' + ch.map(a => med(a).toString(16).padStart(2, '0')).join(''), anchor: 'middle', caps: true, maxw: null };
       });
     }
@@ -270,9 +299,14 @@ const PNGStyle = (() => {
   }
 
   // Style file: one .json with the images inside, for the designer site -> app hand-off.
-  const toStyleFile = (sport, title, edit, images) => ({ jmStyle: 1, sport, title, ...build(edit), edit, images });
+  // fontFiles: the fonts it uses that came in the zip, so Import installs them on the show machine.
+  const toStyleFile = (sport, title, edit, images, fontFiles = {}) => {
+    const spec = build(edit);
+    return { jmStyle: 1, sport, title, ...spec, edit, images,
+      fontFiles: Object.fromEntries(Object.entries(fontFiles).filter(([n]) => spec.fonts.includes(n))) };
+  };
 
-  return { build, unpackZip, autobuild, toStyleFile, guessField, words, slug };
+  return { build, unpackZip, autobuild, toStyleFile, guessField, words, slug, psName };
 })();
 
 if (typeof module !== 'undefined' && require.main === module) {  // node pngstyle.js: the parts without pixels
@@ -297,5 +331,8 @@ if (typeof module !== 'undefined' && require.main === module) {  // node pngstyl
   assert.deepEqual([PNGStyle.guessField('Left teams'), PNGStyle.guessField('Right Teams'), PNGStyle.guessField('top inning arrow')],
     ['awayTeam', 'homeTeam', 'topInningArrow']);
   assert.deepEqual(PNGStyle.words('Rippers Right [x]'), ['Rippers', 'Right']);
+  const ttf = require('fs').readFileSync(require('path').join(__dirname, 'fonts', 'BebasNeue-Regular.ttf'));
+  assert.equal(PNGStyle.psName(ttf.buffer.slice(ttf.byteOffset, ttf.byteOffset + ttf.length)), 'BebasNeue-Regular');
+  assert.equal(PNGStyle.psName(new ArrayBuffer(16)), null);
   console.log('pngstyle.js: all checks passed');
 }

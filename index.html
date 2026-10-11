@@ -69,13 +69,14 @@
   <h2>Build a scorebug from PNG pieces</h2>
   <ol>
     <li>Export every piece as a full-frame PNG (1920×1080, transparent, in position), plus one <b>full bug for reference</b> PNG.
-      Put team/player options in folders (e.g. <i>Left teams</i>). Zip it.</li>
+      Put team/player options in folders (e.g. <i>Left teams</i>). Add the bug's font files (.otf/.ttf). Zip it.</li>
     <li>Pick the sport and name the style above, then <b>Open PNG zip</b>. Auto build sets up what it can from the reference.</li>
     <li>Check each piece, rename the <code>{text1}</code>… fields (e.g. <code>{awayScore}</code>), try the test values.</li>
     <li><b>Export style file</b> and send it to the graphics op, who imports it in JM Graphics.
       To keep working later, open that file here again.</li>
   </ol>
-  <p class="hint">Fonts: use the font's PostScript name (e.g. Industry-Ultra). The preview uses fonts installed on this computer.</p>
+  <p class="hint">Fonts in the zip give the exact font and text sizes, and travel inside the style file to the show machine.
+    Without them, text uses a stand-in font and sizes are estimated.</p>
 </section>
 <main id="main" hidden>
   <div class="left">
@@ -107,7 +108,7 @@
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 const Q = new URLSearchParams(location.search);
-let G = Q.get('g'), APP = false, images = {}, dirty = false, edit, built = { fields: {} }, sel = null /* the selected text item */, view = [0, 0, 1920, 1080], ready = false;
+let G = Q.get('g'), APP = false, images = {}, fontFiles = {}, dirty = false, edit, built = { fields: {} }, sel = null /* the selected text item */, view = [0, 0, 1920, 1080], ready = false;
 
 const ROLES = { always: 'Always shown', pick: 'Option of a field', if: 'Shown when…', off: 'Not used' };
 const OPS = { truthy: 'is on', '!': 'is off', '=': '=', '!=': '≠', '>=': '≥', '<=': '≤', '>': '>', '<': '<' };
@@ -258,10 +259,29 @@ function rebuild() {
   renderValues(); send();
 }
 
+// Fonts: zip/style-file fonts (data URLs) and, in the app, its fonts/ folder. Loaded here too so auto build can
+// measure the real font; the preview frame gets them in each message.
+const fontUrls = {};
+async function addFonts(map) {
+  for (const [name, url] of Object.entries(map)) {
+    if (fontUrls[name]) continue;
+    fontUrls[name] = url;
+    const face = new FontFace(name, `url(${url})`);
+    try { document.fonts.add(await face.load()); } catch { delete fontUrls[name]; continue; }
+    $('fontNames').insertAdjacentHTML('beforeend', `<option value="${esc(name)}">`);
+  }
+}
+function capRatio(font) {  // digit height / font size for this font, measured; Bebas-like guess if it isn't loaded
+  if (![...document.fonts].some(f => f.family.replace(/"/g, '') === font && f.status === 'loaded')) return 0.7;
+  const ctx = document.createElement('canvas').getContext('2d');
+  ctx.font = `100px "${font}"`;
+  return ctx.measureText('0').actualBoundingBoxAscent / 100 || 0.7;
+}
+
 function send() {  // the preview is display.html itself, fed directly; image srcs become real URLs
   const real = ns => ns.map(n => ({ ...n, ...(n.src && { src: images[n.src] }), ...(n.children && { children: real(n.children) }) }));
   if (ready && built.nodes) $('disp').contentWindow.postMessage({ name: 'preview', spec: { ...built, nodes: real(built.nodes) },
-    values: edit.sample, view: view.join(' ') }, '*');
+    values: edit.sample, view: view.join(' '), fonts: fontUrls }, '*');
 }
 
 function fitView() {  // zoom the preview to the bug, not the whole 1920×1080 frame
@@ -321,7 +341,8 @@ async function begin(e, imgs, msg) {
 $('auto').onclick = async () => {
   $('auto').textContent = 'Building…';
   try {
-    await begin(await PNGStyle.autobuild(edit, images, defaultFont()), images,
+    const font = Object.keys(fontFiles)[0] || defaultFont();  // the zip's font, else the last one used
+    await begin(await PNGStyle.autobuild(edit, images, font, capRatio(font)), images,
       'Auto build done: rename the {text1}… fields and check each piece, then ' + (APP ? 'Save.' : 'Export.'));
     changed(false);
   } catch (e) { say(e.message, true); }
@@ -338,13 +359,17 @@ $('open').onchange = async () => {
       if (d.jmStyle !== 1) throw new Error('Not a JM style file');
       if ($('sport').querySelector(`option[value="${d.sport}"]`)) $('sport').value = d.sport;
       $('title').value = d.title || '';
+      fontFiles = d.fontFiles || {}; await addFonts(fontFiles);
       await begin(d.edit, d.images, `Opened ${f.name}.`);
     } else {
-      const { edit: e, images: imgs } = await PNGStyle.unpackZip(f);
+      const { edit: e, images: imgs, fonts } = await PNGStyle.unpackZip(f);
+      fontFiles = fonts; await addFonts(fonts);
       if (!$('title').value) $('title').value = f.name.replace(/\.zip$/i, '');
       await begin(e, imgs);
       if (e.ref) await $('auto').onclick();
       else say('No "reference" PNG in the zip, so no auto build: set up each piece below.');
+      if (!Object.keys(fonts).length) $('log').textContent += '\nNo .otf/.ttf in the zip: text uses ' + defaultFont() +
+        '. Add the bug\'s font files to the zip for the exact font and sizes.';
     }
     dirty = true;
   } catch (e) { say(e.message, true); }
@@ -365,7 +390,7 @@ $('save').onclick = async () => {
   if (!G && !title) { $('title').focus(); return say('Name the style first.', true); }
   $('save').textContent = APP ? 'Saving…' : 'Exporting…';
   try {
-    const file = PNGStyle.toStyleFile(sport, title, edit, await dataUrls());
+    const file = PNGStyle.toStyleFile(sport, title, edit, await dataUrls(), fontFiles);
     if (!APP) {
       const a = Object.assign(document.createElement('a'), { download: `${sport}-${PNGStyle.slug(title)}.json`,
         href: URL.createObjectURL(new Blob([JSON.stringify(file)], { type: 'application/json' })) });
@@ -399,14 +424,15 @@ addEventListener('beforeunload', e => { if (dirty) e.preventDefault(); });
     names = (await Promise.all((tour?.graphics || []).filter(n => n !== G).map(n =>
       fetch(`graphics/${n}/graphic.json`).then(r => r.json()).then(s => Object.keys(s.fields), () => [])))).flat();
     const listing = await fetch('fonts/').then(r => r.text()).catch(() => '');  // the server's folder listing
-    fonts = [...listing.matchAll(/href="([^"]+)\.(?:otf|ttf|woff2)"/g)].map(m => decodeURIComponent(m[1]));
+    const files = [...listing.matchAll(/href="([^"]+\.(?:otf|ttf|woff2))"/g)].map(m => m[1]);
+    await addFonts(Object.fromEntries(files.map(f => [decodeURIComponent(f).replace(/\.\w+$/, ''), 'fonts/' + f])));
   } else {
     names = sports.flatMap(s => s.fields || []);
     fonts = site.fonts || [];
   }
   $('fieldNames').innerHTML = [...new Set([...names, 'awayTeam', 'homeTeam', 'awayScore', 'homeScore', 'inning', 'topOrBottom', 'outs'])]
     .map(n => `<option value="${esc(n)}">`).join('');
-  $('fontNames').innerHTML = [...new Set(fonts)].map(f => `<option value="${esc(f)}">`).join('');
+  $('fontNames').insertAdjacentHTML('beforeend', [...new Set(fonts)].filter(f => !fontUrls[f]).map(f => `<option value="${esc(f)}">`).join(''));
   $('save').textContent = APP ? 'Save' : 'Export style file';
   $('back').hidden = !APP;
   if (G) {  // the app, an existing style
