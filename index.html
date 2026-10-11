@@ -31,6 +31,12 @@
   .save { background: var(--red); border-color: var(--red); padding: 6px 16px; }
   .card { background: var(--raised); border-radius: 8px; padding: 8px; margin-top: 8px; border: 2px solid transparent; }
   .card.sel { border-color: var(--yellow); }
+  .card.text { border-left: 3px solid var(--yellow); }
+  .card.text.sel { border-color: var(--yellow); }
+  .card.above { box-shadow: 0 -3px 0 var(--blue); }
+  .card.below { box-shadow: 0 3px 0 var(--blue); }
+  .card.dragging { opacity: .4; }
+  .grip { cursor: grab; color: var(--dim); font-size: 16px; padding: 0 2px; user-select: none; }
   .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 4px; }
   .title { font-weight: 800; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .folder { color: var(--dim); font-weight: 400; }
@@ -88,13 +94,9 @@
   </div>
   <div>
     <section>
-      <h2>Live text</h2>
+      <h2>Layers <span class="folder">(top of the stack first · drag ⠿ or ↑↓ to reorder)</span></h2>
       <button id="addText">+ Add live text</button> <button id="addFixed" title="Text that never changes, like the / between two numbers">+ Add fixed text</button>
-      <div id="texts"></div>
-    </section>
-    <section>
-      <h2>Pieces <span class="folder">(top of the stack first)</span></h2>
-      <div id="pieces"></div>
+      <div id="layers"></div>
     </section>
   </div>
 </main>
@@ -105,98 +107,120 @@
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 const Q = new URLSearchParams(location.search);
-let G = Q.get('g'), APP = false, images = {}, dirty = false, edit, built = { fields: {} }, sel = null, view = [0, 0, 1920, 1080], ready = false;
+let G = Q.get('g'), APP = false, images = {}, dirty = false, edit, built = { fields: {} }, sel = null /* the selected text item */, view = [0, 0, 1920, 1080], ready = false;
 
 const ROLES = { always: 'Always shown', pick: 'Option of a field', if: 'Shown when…', off: 'Not used' };
 const OPS = { truthy: 'is on', '!': 'is off', '=': '=', '!=': '≠', '>=': '≥', '<=': '≤', '>': '>', '<': '<' };
 const needsValue = op => !['truthy', '!'].includes(op);
 
-// Blocks: consecutive pieces from the same folder move and get set up together (a folder of team logos = one picker).
+// Layers: each text is its own layer; consecutive pieces from the same folder are one layer that moves and gets
+// set up together (a folder of team logos = one picker). edit.items is bottom-first, the list shows top-first.
 function blocks() {
   const out = [];
   edit.items.forEach((it, i) => {
     const last = out[out.length - 1];
-    if (it.k === 'img' && it.folder && last && last.folder === it.folder) last.idx.push(i);
-    else if (it.k === 'img') out.push({ folder: it.folder, idx: [i] });
+    if (it.k === 'img' && it.folder && last && !last.text && last.folder === it.folder) last.idx.push(i);
+    else out.push({ folder: it.k === 'img' ? it.folder : '', text: it.k === 'text', idx: [i] });
   });
   return out;
 }
 
-function move(i, dir) {  // dir +1 = up the stack (drawn later)
-  const bs = blocks(), b = bs.findIndex(x => x.idx.includes(i)), o = bs[b + dir];
-  if (!o) return;
-  const [lo, hi] = dir > 0 ? [bs[b], o] : [o, bs[b]];
-  const a = lo.idx[0], z = hi.idx[hi.idx.length - 1];
-  const loItems = edit.items.slice(a, lo.idx[lo.idx.length - 1] + 1), hiItems = edit.items.slice(hi.idx[0], z + 1);
-  const between = edit.items.slice(lo.idx[lo.idx.length - 1] + 1, hi.idx[0]);  // text items sit outside blocks
-  edit.items.splice(a, z - a + 1, ...hiItems, ...between, ...loItems);
+function reorder(from, to) {  // positions in the top-first list; to = the slot to land in
+  const list = blocks().reverse().map(b => b.idx.map(i => edit.items[i]));
+  if (to < 0 || to >= list.length || to === from) return;
+  list.splice(to, 0, list.splice(from, 1)[0]);
+  edit.items = list.reverse().flat();
   changed(true);
 }
 
-function renderPieces() {
-  const bs = blocks().reverse();
-  $('pieces').innerHTML = bs.map(b => {
-    const first = edit.items[b.idx[0]];
-    const title = b.folder || first.name;
-    const head = `
-      <div class="row">
-        <span class="title">${esc(title)} ${b.idx.length > 1 ? `<span class="folder">· ${b.idx.length} pieces</span>` : ''}</span>
-        <button data-mv="1" title="Up the stack">↑</button><button data-mv="-1" title="Down the stack">↓</button>
-      </div>
-      <div class="row">
-        <select data-k="role">${Object.entries(ROLES).map(([k, v]) => `<option value="${k}" ${first.role === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
-        <input data-k="field" list="fieldNames" placeholder="field, e.g. awayTeam" value="${esc(first.field)}" ${['pick', 'if'].includes(first.role) ? '' : 'hidden'} style="flex:1">
-        <select data-k="op" ${first.role === 'if' ? '' : 'hidden'}>${Object.entries(OPS).map(([k, v]) => `<option value="${k}" ${first.op === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
-      </div>`;
-    const showVal = first.role === 'pick' || (first.role === 'if' && needsValue(first.op));
-    const rows = b.idx.map(i => {
+const pieceCard = (b, first) => {
+  const showVal = first.role === 'pick' || (first.role === 'if' && needsValue(first.op));
+  return `
+    <div class="row">
+      <span class="grip" title="Drag to reorder">⠿</span>
+      <span class="title">${esc(b.folder || first.name)} ${b.idx.length > 1 ? `<span class="folder">· ${b.idx.length} pieces</span>` : ''}</span>
+      <button data-mv="-1" title="Up the stack">↑</button><button data-mv="1" title="Down the stack">↓</button>
+    </div>
+    <div class="row">
+      <select data-k="role">${Object.entries(ROLES).map(([k, v]) => `<option value="${k}" ${first.role === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
+      <input data-k="field" list="fieldNames" placeholder="field, e.g. awayTeam" value="${esc(first.field)}" ${['pick', 'if'].includes(first.role) ? '' : 'hidden'} style="flex:1">
+      <select data-k="op" ${first.role === 'if' ? '' : 'hidden'}>${Object.entries(OPS).map(([k, v]) => `<option value="${k}" ${first.op === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
+    </div>` + b.idx.map(i => {
       const it = edit.items[i];
-      return `<div class="piece" data-i="${i}"><img class="thumb" src="${images[it.src]}">
+      return `<div class="piece"><img class="thumb" src="${images[it.src]}">
         <span class="nm" title="${esc(it.name)}">${esc(it.name)}</span>
         ${showVal ? `<input data-k="value" data-i="${i}" placeholder="${first.role === 'pick' ? 'option (* = fallback)' : 'value'}" value="${esc(it.value)}" style="width:150px">` : ''}</div>`;
     }).join('');
-    return `<div class="card ${first.role === 'off' ? 'off' : ''}" data-b="${b.idx.join(',')}">${head}${rows}</div>`;
-  }).join('') || '<p class="hint">No pieces.</p>';
-  $('pieces').querySelectorAll('.card').forEach(card => {
-    const idx = card.dataset.b.split(',').map(Number);
-    card.querySelectorAll('[data-mv]').forEach(btn => btn.onclick = () => move(idx[0], +btn.dataset.mv));
+};
+
+const kind = t => /\{\w+\}/.test(t.tpl) ? 'LIVE TEXT' : 'FIXED TEXT · always on';
+const textCard = t => `
+    <div class="row"><span class="grip" title="Drag to reorder">⠿</span><span class="kind">${kind(t)}</span>
+      <input data-k="tpl" value="${esc(t.tpl)}" placeholder="{awayScore} or fixed text like /" style="flex:1" title="Field in {braces} = live; no braces = fixed text that's always on">
+      <button data-mv="-1" title="Up the stack">↑</button><button data-mv="1" title="Down the stack">↓</button>
+      <button data-del title="Delete">✕</button></div>
+    <div class="row">
+      <input data-k="font" list="fontNames" value="${esc(t.font)}" placeholder="font" style="width:150px">
+      <input data-k="size" type="number" value="${t.size}" title="Size">
+      <input data-k="color" type="color" value="${esc(t.color)}" title="Color">
+      <select data-k="anchor" title="Alignment: where the dot is">${[['start', 'Left'], ['middle', 'Center'], ['end', 'Right']].map(([v, l]) => `<option value="${v}" ${t.anchor === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <label><input data-k="caps" type="checkbox" ${t.caps ? 'checked' : ''}> CAPS</label>
+    </div>
+    <div class="row">x <input data-k="x" type="number" value="${t.x}"> y <input data-k="y" type="number" value="${t.y}">
+      max width <input data-k="maxw" type="number" value="${t.maxw || ''}" placeholder="—" title="Long values squeeze to fit (names)"></div>`;
+
+let dragFrom = null;
+function renderLayers() {
+  const bs = blocks().reverse();
+  $('layers').innerHTML = bs.map((b, pos) => {
+    const first = edit.items[b.idx[0]];
+    return `<div class="card ${b.text ? 'text' : ''} ${b.text && first === sel ? 'sel' : ''} ${first.role === 'off' ? 'off' : ''}" data-pos="${pos}">${
+      b.text ? textCard(first) : pieceCard(b, first)}</div>`;
+  }).join('') || '<p class="hint">No layers.</p>';
+  $('layers').querySelectorAll('.card').forEach(card => {
+    const pos = +card.dataset.pos, b = bs[pos], first = edit.items[b.idx[0]];
+    card.querySelectorAll('[data-mv]').forEach(btn => btn.onclick = e => { e.stopPropagation(); reorder(pos, pos + +btn.dataset.mv); });
+    // drag by the ⠿ grip only, so text inputs still select normally
+    card.querySelector('.grip').onmousedown = () => card.draggable = true;
+    card.ondragstart = e => { dragFrom = pos; e.dataTransfer.effectAllowed = 'move'; card.classList.add('dragging'); };
+    card.ondragend = () => { card.draggable = false; card.classList.remove('dragging'); $('layers').querySelectorAll('.above,.below').forEach(c => c.classList.remove('above', 'below')); };
+    card.ondragover = e => {
+      if (dragFrom === null) return;
+      e.preventDefault();
+      const r = card.getBoundingClientRect(), below = e.clientY > r.top + r.height / 2;
+      card.classList.toggle('below', below); card.classList.toggle('above', !below);
+    };
+    card.ondragleave = () => card.classList.remove('above', 'below');
+    card.ondrop = e => {
+      e.preventDefault();
+      const r = card.getBoundingClientRect(), slot = pos + (e.clientY > r.top + r.height / 2 ? 1 : 0);
+      const from = dragFrom; dragFrom = null;
+      reorder(from, slot > from ? slot - 1 : slot);
+    };
+    if (b.text) {
+      const t = first;
+      card.onclick = () => {
+        if (sel === t) return;
+        sel = t; mark();
+        $('layers').querySelectorAll('.card.sel').forEach(c => c.classList.remove('sel'));
+        card.classList.add('sel');
+      };
+      card.querySelector('[data-del]').onclick = e => { e.stopPropagation(); edit.items.splice(edit.items.indexOf(t), 1); sel = null; mark(); changed(true); };
+      card.querySelectorAll('[data-k]').forEach(inp => inp.oninput = () => {
+        const k = inp.dataset.k;
+        t[k] = inp.type === 'checkbox' ? inp.checked : inp.type === 'number' ? (inp.value === '' ? null : +inp.value) : inp.value;
+        if (k === 'tpl') { seedSamples(); card.querySelector('.kind').textContent = kind(t); }
+        changed(false); mark();
+      });
+      return;
+    }
     card.querySelectorAll('[data-k]').forEach(inp => {
       const k = inp.dataset.k;
       inp.oninput = inp.onchange = () => {
         if (k === 'value') edit.items[+inp.dataset.i].value = inp.value;
-        else idx.forEach(i => edit.items[i][k] = inp.value);  // role/field/op apply to the whole folder
+        else b.idx.forEach(i => edit.items[i][k] = inp.value);  // role/field/op apply to the whole folder
         changed(k !== 'value' && inp.tagName === 'SELECT');
       };
-    });
-  });
-}
-
-function renderTexts() {
-  const ts = edit.items.map((it, i) => [it, i]).filter(([it]) => it.k === 'text');
-  $('texts').innerHTML = ts.map(([t, i]) => `
-    <div class="card ${sel === i ? 'sel' : ''}" data-i="${i}">
-      <div class="row"><span class="kind">${/\{\w+\}/.test(t.tpl) ? 'LIVE' : 'FIXED · always on'}</span>
-        <input data-k="tpl" value="${esc(t.tpl)}" placeholder="{awayScore} or fixed text like /" style="flex:1" title="Field in {braces} = live; no braces = fixed text that's always on">
-        <button data-del title="Delete">✕</button></div>
-      <div class="row">
-        <input data-k="font" list="fontNames" value="${esc(t.font)}" placeholder="font" style="width:150px">
-        <input data-k="size" type="number" value="${t.size}" title="Size">
-        <input data-k="color" type="color" value="${esc(t.color)}" title="Color">
-        <select data-k="anchor" title="Alignment: where the dot is">${[['start', 'Left'], ['middle', 'Center'], ['end', 'Right']].map(([v, l]) => `<option value="${v}" ${t.anchor === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
-        <label><input data-k="caps" type="checkbox" ${t.caps ? 'checked' : ''}> CAPS</label>
-      </div>
-      <div class="row">x <input data-k="x" type="number" value="${t.x}"> y <input data-k="y" type="number" value="${t.y}">
-        max width <input data-k="maxw" type="number" value="${t.maxw || ''}" placeholder="—" title="Long values squeeze to fit (names)"></div>
-    </div>`).join('') || '<p class="hint">No live text yet.</p>';
-  $('texts').querySelectorAll('.card').forEach(card => {
-    const i = +card.dataset.i, t = edit.items[i];
-    card.onclick = e => { if (sel !== i) { sel = i; renderTexts(); mark(); } };
-    card.querySelector('[data-del]').onclick = e => { e.stopPropagation(); edit.items.splice(i, 1); sel = null; changed(true); };
-    card.querySelectorAll('[data-k]').forEach(inp => inp.oninput = () => {
-      const k = inp.dataset.k;
-      t[k] = inp.type === 'checkbox' ? inp.checked : inp.type === 'number' ? (inp.value === '' ? null : +inp.value) : inp.value;
-      if (k === 'tpl') { seedSamples(); card.querySelector('.kind').textContent = /\{\w+\}/.test(t.tpl) ? 'LIVE' : 'FIXED · always on'; }
-      changed(false); mark();
     });
   });
 }
@@ -222,7 +246,7 @@ function renderValues() {
 
 let timer;
 function changed(structure) {
-  if (structure) { renderPieces(); renderTexts(); }
+  if (structure) renderLayers();
   clearTimeout(timer); timer = setTimeout(rebuild, 120);
   dirty = true; $('save').textContent = APP ? 'Save' : 'Export style file';
 }
@@ -253,25 +277,27 @@ function fitView() {  // zoom the preview to the bug, not the whole 1920×1080 f
 }
 
 function mark() {
-  const t = edit.items[sel];
+  const t = sel;
   $('mark').hidden = !t || t.k !== 'text';
   if (t && t.k === 'text') Object.assign($('mark').style, { left: `${(t.x - view[0]) / view[2] * 100}%`, top: `${(t.y - view[1]) / view[3] * 100}%` });
 }
 
 $('hit').onclick = e => {
-  const t = edit.items[sel];
+  const t = sel;
   if (!t || t.k !== 'text') return $('hint').animate([{ color: '#FCFF7A' }, { color: '' }], 900);
   const r = $('hit').getBoundingClientRect();
   t.x = Math.round(view[0] + (e.clientX - r.left) / r.width * view[2]);
   t.y = Math.round(view[1] + (e.clientY - r.top) / r.height * view[3]);
-  renderTexts(); mark(); changed(false);
+  const card = $('layers').querySelector('.card.sel');  // update its x/y boxes without redrawing the list
+  if (card) { card.querySelector('[data-k=x]').value = t.x; card.querySelector('[data-k=y]').value = t.y; }
+  mark(); changed(false);
 };
 
 const defaultFont = () => edit.items.filter(i => i.k === 'text').pop()?.font || $('fontNames').options[0]?.value || 'BebasNeue-Regular';
 const addText = tpl => {
   edit.items.push({ k: 'text', tpl, x: Math.round(view[0] + view[2] / 2), y: Math.round(view[1] + view[3] / 2),
     size: 48, font: defaultFont(), color: '#ffffff', anchor: 'middle', caps: true, maxw: null });
-  sel = edit.items.length - 1;
+  sel = edit.items[edit.items.length - 1];
   seedSamples(); changed(true); mark();
 };
 $('addText').onclick = () => addText('{awayScore}');
@@ -286,7 +312,7 @@ async function begin(e, imgs, msg) {
   $('start').hidden = true; $('main').hidden = $('save').hidden = false;
   if (edit.ref) { $('ref').src = images[edit.ref.src]; $('refop').onchange(); }
   $('refop').parentNode.hidden = $('auto').hidden = !edit.ref;
-  fitView(); renderPieces(); renderTexts(); mark();
+  fitView(); renderLayers(); mark();
   if (!$('disp').getAttribute('src')) $('disp').src = 'display.html?edit=1';
   rebuild();
   if (msg) say(msg);
