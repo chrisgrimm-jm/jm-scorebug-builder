@@ -6,6 +6,7 @@
   svg.gfx { position: fixed; inset: 0; width: 100vw; height: 100vh; display: none; }
   svg.gfx g, svg.gfx image, svg.gfx text { transform-box: fill-box; transform-origin: center; }
 </style>
+<script src="bip.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-database-compat.js"></script>
 </head><body>
@@ -99,14 +100,13 @@ function fit({ e, n }) {  // paragraph-box text: squeeze long values into the de
 }
 
 // Ball In Play (cricket) over: values.over = "0,1,wd,wd2,w" (this over, oldest first) becomes
-// ball1..ball8 + ball1Sub..ball8Sub for the designer's circle layers, and ballCount = 6 circles +1 per wide (max 8).
-// A 3rd+ wide keeps 8 circles and shows the latest 8 deliveries (oldest drops off the front).
+// ball1..ball8 + ball1Sub..ball8Sub for the designer's circle layers, and ballCount (BIP.circles in bip.js:
+// empty circles = good balls left in the over).
 // Tokens: 0 dot · 1-6 runs · wd wide · wd1-wd6 wide + runs · w wicket.
 function withOver(v) {
   if (v.over == null) return v;
-  const balls = String(v.over).split(',').map(b => b.trim().toLowerCase()).filter(Boolean);
-  const out = { ...v, ballCount: Math.min(8, 6 + balls.filter(b => b.startsWith('wd')).length) };
-  const shown = balls.slice(-8);
+  const { count, shown } = BIP.circles(v.over);
+  const out = { ...v, ballCount: count };
   for (let i = 1; i <= 8; i++) {
     const b = shown[i - 1] || '';
     out['ball' + i] = b === '0' ? '•' : b === 'w' ? 'W' : b.startsWith('wd') ? 'WIDE' : b;
