@@ -9,6 +9,9 @@
 //   [field] [!f] [f=x] [f>=n] in a name -> shown only when true, same as PSD layers
 //   a numeric prefix ("01 bg.png") sets the stacking order, else bigger pieces go underneath
 //   .otf/.ttf files anywhere in the zip -> the bug's fonts: exact names, exact text sizes, carried to the app
+// A PSD (alone, with font files, or inside the zip) goes through unpackPsd: same layer-name conventions as the app's
+// PSD import ({field} text = live text with Photoshop's exact font/size/color/alignment, {field} group = options,
+// [cond] = shown when), the PSD's own preview becomes the reference. Needs ag-psd on the page.
 const PNGStyle = (() => {
   const TEXT = /\{(\w+)\}/g, COND = /\[(!?)(\w+)\s*(>=|<=|!=|=|>|<)?\s*([^\]]*?)\s*\]/;
   const MATCH = 40;  // max channel difference for a pixel to count as "same as the reference"
@@ -89,6 +92,7 @@ const PNGStyle = (() => {
         pickers[f].children.push(node);
         continue;
       }
+      if (it.role === 'slot' && f) { node.field = f; ((fields[f] ||= {}).text = true); }  // logo from a URL field
       if (it.role === 'if' && f) node.if = condOf(f, it.op || 'truthy', ['truthy', '!'].includes(it.op || 'truthy') ? '' : String(it.value ?? ''), fields);
       nodes.push(node);
     }
@@ -105,17 +109,25 @@ const PNGStyle = (() => {
     return ctx.getImageData(0, 0, w, h).data;
   }
 
+  // [{name, buf}] font files -> {PostScript name: data URL}
+  async function readFonts(files) {
+    const fonts = {};
+    for (const { name: file, buf } of files) {
+      const name = psName(buf);
+      if (name && /^[\w .-]+$/.test(name)) fonts[name] = 'data:font/' + (/\.otf$/i.test(file) ? 'otf' : 'ttf') + ';base64,' + b64(buf);
+    }
+    return fonts;
+  }
+
   const b64 = buf => { let s = ''; const u = new Uint8Array(buf); for (let i = 0; i < u.length; i += 32768) s += String.fromCharCode(...u.subarray(i, i + 32768)); return btoa(s); };
 
   // Zip of full-frame PNGs (+ fonts) -> { edit, images: {src: dataURL}, fonts: {name: dataURL} }. Needs JSZip on the page.
   async function unpackZip(file) {
     const zip = await JSZip.loadAsync(file).catch(() => { throw new Error('That is not a .zip of PNGs'); });
     const real = Object.values(zip.files).filter(f => !f.dir && !f.name.includes('__MACOSX') && !f.name.split('/').pop().startsWith('.'));
-    const fonts = {};  // PostScript name -> data URL
-    for (const f of real.filter(f => /\.(otf|ttf)$/i.test(f.name))) {
-      const buf = await f.async('arraybuffer'), name = psName(buf);
-      if (name && /^[\w .-]+$/.test(name)) fonts[name] = 'data:font/' + (/\.otf$/i.test(f.name) ? 'otf' : 'ttf') + ';base64,' + b64(buf);
-    }
+    const fonts = await readFonts(await Promise.all(real.filter(f => /\.(otf|ttf)$/i.test(f.name)).map(async f => ({ name: f.name, buf: await f.async('arraybuffer') }))));
+    const psdFile = real.find(f => /\.psd$/i.test(f.name));
+    if (psdFile) return unpackPsd(await psdFile.async('arraybuffer'), fonts);
     let files = real.filter(f => /\.png$/i.test(f.name));
     if (!files.length) throw new Error('No PNGs in that zip');
     if (files.length > 400) throw new Error(`${files.length} PNGs: more than 400 looks like the wrong zip`);
@@ -160,6 +172,107 @@ const PNGStyle = (() => {
     const groups = [...byFolder.values()].map(k => k.sort(cmp)).sort((a, b) => cmp(a[0], b[0]));  // folder stays together
     const [width, height] = size || [1920, 1080];
     return { edit: { items: groups.flat(), ref, sample: {}, width, height }, images, fonts };
+  }
+
+  // PSD -> { edit, images, fonts, warnings }. Layer names drive it like the app's PSD import (import_psd.py).
+  // ag-psd can't draw layer effects, clipping masks or adjustment layers: those come through plain and get a warning.
+  async function unpackPsd(buf, fonts = {}) {
+    let psd;
+    try { psd = agPsd.readPsd(buf, { skipThumbnail: true }); }
+    catch (e) { throw new Error('Could not read that PSD (' + e.message + '). Save it from Photoshop as a regular .psd with Maximize Compatibility on.'); }
+    const W = psd.width, H = psd.height, items = [], images = {}, warnings = [], sample = {};
+    let n = 0, top = psd.children || [];
+    while (top.length === 1 && top[0].artboard && top[0].children) top = top[0].children;  // an artboard is just a frame
+    const named = l => /\{\w+\}|\[[^\]]+\]/.test(l.name || '');
+    const dynamic = l => named(l) || (l.children || []).some(dynamic);
+    const effectsOn = l => !!l.effects && !l.effects.disabled && Object.values(l.effects).some(e =>
+      Array.isArray(e) ? e.some(x => x.enabled !== false) : e && typeof e === 'object' && e.enabled !== false);
+    const draw = (ctx, l, force) => {  // a layer or group, bottom to top, onto a full-frame canvas
+      if ((l.hidden && !force) || l.adjustment) return;
+      if (l.children) { for (const c of l.children) draw(ctx, c, false); return; }
+      if (!l.canvas) return;
+      ctx.globalAlpha = l.opacity ?? 1;
+      ctx.drawImage(l.canvas, l.left || 0, l.top || 0);
+      ctx.globalAlpha = 1;
+    };
+    const piece = (l, extra) => {  // flatten to one cropped image, or null if it draws nothing
+      const c = Object.assign(document.createElement('canvas'), { width: W, height: H });
+      const ctx = c.getContext('2d', { willReadFrequently: true });
+      draw(ctx, l, true);
+      const px = ctx.getImageData(0, 0, W, H).data;
+      let x0 = W, y0 = H, x1 = -1, y1 = -1;
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (px[(y * W + x) * 4 + 3]) {
+        if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+      }
+      if (x1 < 0) return null;
+      const src = `img_${++n}.png`, w = x1 - x0 + 1, h = y1 - y0 + 1, out = Object.assign(document.createElement('canvas'), { width: w, height: h });
+      out.getContext('2d').drawImage(c, -x0, -y0);
+      images[src] = out.toDataURL('image/png');
+      const name = (l.name || '').trim();
+      const warn = [];
+      const visit = x => {
+        if (effectsOn(x)) warn.push(`"${(x.name || '').trim()}" has layer effects (stroke/shadow/glow) that won't show: Layer › Rasterize › Layer Style`);
+        if (x.clipping) warn.push(`"${(x.name || '').trim()}" is a clipping mask: merge it into the layer below`);
+        if (x.adjustment) warn.push(`"${(x.name || '').trim()}" is an adjustment layer: merge it down or flatten that group`);
+        if (x.blendMode && !['normal', 'pass through'].includes(x.blendMode)) warn.push(`"${(x.name || '').trim()}" uses ${x.blendMode} blending: set it to Normal or merge it`);
+        (x.children || []).forEach(visit);
+      };
+      visit(l);
+      warnings.push(...warn);
+      return { k: 'img', src, x: x0, y: y0, w, h, name: name || 'layer', folder: '', role: 'always', field: '', op: 'truthy', value: '',
+        ...(warn.length && { warn: warn.join('\n') }), ...extra };
+    };
+    const condOfName = name => { const m = name.match(COND); return m ? { role: 'if', field: m[2], op: m[3] || (m[1] ? '!' : 'truthy'), value: m[4] } : {}; };
+    const text = l => {
+      const t = l.text, st = t.style || {}, ps = t.paragraphStyle || {}, name = l.name.trim();
+      const [xx, , , yy, tx, ty] = t.transform || [1, 0, 0, 1, l.left || 0, l.top || 0];
+      const size = (st.fontSize || 24) * yy, fc = st.fillColor || { r: 255, g: 255, b: 255 };
+      const anchor = { left: 'start', right: 'end', center: 'middle' }[ps.justification] || 'start';
+      const it = { k: 'text', tpl: name, size: Math.round(size * 100) / 100, font: (st.font?.name || 'BebasNeue-Regular').replace(/^'|'$/g, ''),
+        color: '#' + [fc.r, fc.g, fc.b].map(v => Math.round(v ?? 255).toString(16).padStart(2, '0')).join(''), anchor, caps: st.fontCaps === 2, maxw: null };
+      if (t.shapeType === 'box' && t.boxBounds) {  // paragraph box: fixed width, long values squeeze to fit
+        const [bl, bt, br] = t.boxBounds, x0 = tx + bl * xx, w = (br - bl) * xx;
+        Object.assign(it, { x: Math.round({ start: x0, end: x0 + w, middle: x0 + w / 2 }[anchor]), y: Math.round(ty + bt * yy + size * 0.85), maxw: Math.round(w) });
+      } else Object.assign(it, { x: Math.round(tx), y: Math.round(ty) });  // point text: the transform origin is the baseline
+      const one = name.match(/^\{(\w+)\}$/);  // the designer's sample text becomes the test value
+      if (one) sample[one[1]] = t.text;
+      return it;
+    };
+    const walk = (layers, folder) => {
+      for (const l of layers) {  // ag-psd lists layers bottom to top, like edit.items
+        const name = (l.name || '').trim();
+        if ((l.hidden && !dynamic(l)) || l.adjustment) continue;
+        if (l.text && /\{\w+\}/.test(name)) { items.push(text(l)); continue; }
+        const pick = name.match(/^\{(\w+)\}$/);
+        if (l.children && pick) {  // {field} group: each child is one option ("*" = shown when nothing matches)
+          for (const c of l.children) {
+            const p = piece(c, { role: 'pick', field: pick[1], value: (c.name || '').trim(), folder: folder ? `${folder}/${name}` : name });
+            if (p) items.push(p);
+          }
+          continue;
+        }
+        if (l.children && l.children.some(dynamic)) { walk(l.children, folder ? `${folder}/${name}` : name); continue; }
+        const slot = !l.children && name.match(/^\{(\w+)\}$/);
+        const p = piece(l, slot ? { role: 'slot', field: slot[1] } : condOfName(name));
+        if (p) items.push(p);
+      }
+    };
+    walk(top, '');
+    let ref = null;
+    const imgs = items.filter(i => i.k === 'img');
+    if (psd.canvas && imgs.length) {  // the PSD's own preview, trimmed to the bug: the reference (needs Maximize Compatibility)
+      const x0 = Math.min(...imgs.map(i => i.x)), y0 = Math.min(...imgs.map(i => i.y));
+      const x1 = Math.max(...imgs.map(i => i.x + i.w)), y1 = Math.max(...imgs.map(i => i.y + i.h));
+      const c = Object.assign(document.createElement('canvas'), { width: x1 - x0, height: y1 - y0 });
+      c.getContext('2d').drawImage(psd.canvas, -x0, -y0);
+      const src = `img_${++n}.png`;
+      images[src] = c.toDataURL('image/png');
+      ref = { k: 'img', src, x: x0, y: y0, w: x1 - x0, h: y1 - y0, name: 'PSD preview (reference)' };
+    } else warnings.push('No preview inside this PSD, so no reference overlay: in Photoshop turn on Preferences › File Handling › Maximize PSD Compatibility and save again');
+    const used = new Set(items.filter(i => i.k === 'text').map(i => i.font));
+    const missing = [...used].filter(f => !fonts[f]);
+    if (missing.length) warnings.push(`Font files not included: ${missing.join(', ')}. Add the .otf/.ttf for exact text.`);
+    return { edit: { items, ref, sample, width: W, height: H }, images, fonts, warnings: [...new Set(warnings)] };
   }
 
   // Work the setup out from the reference: which option each folder shows, what's hidden, what sits on top of what,
@@ -306,7 +419,7 @@ const PNGStyle = (() => {
       fontFiles: Object.fromEntries(Object.entries(fontFiles).filter(([n]) => spec.fonts.includes(n))) };
   };
 
-  return { build, unpackZip, autobuild, toStyleFile, guessField, words, slug, psName };
+  return { build, unpackZip, unpackPsd, readFonts, autobuild, toStyleFile, guessField, words, slug, psName };
 })();
 
 if (typeof module !== 'undefined' && require.main === module) {  // node pngstyle.js: the parts without pixels

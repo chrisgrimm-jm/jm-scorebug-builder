@@ -102,14 +102,14 @@ function fit({ e, n }) {  // paragraph-box text: squeeze long values into the de
 // Ball In Play (cricket) over: values.over = "0,1,wd,wd2,w" (this over, oldest first) becomes
 // ball1..ball8 + ball1Sub..ball8Sub for the designer's circle layers, and ballCount (BIP.circles in bip.js:
 // empty circles = good balls left in the over).
-// Tokens: 0 dot · 1-6 runs · wd wide · wd1-wd6 wide + runs · w wicket.
+// Tokens: 0 dot · 1-6 runs · wd wide · wd1-wd6 wide + runs · w wicket · w1-w3 runs + wicket (1W-3W).
 function withOver(v) {
   if (v.over == null) return v;
   const { count, shown } = BIP.circles(v.over);
   const out = { ...v, ballCount: count };
   for (let i = 1; i <= 8; i++) {
     const b = shown[i - 1] || '';
-    out['ball' + i] = b === '0' ? '•' : b === 'w' ? 'W' : b.startsWith('wd') ? 'WIDE' : b;
+    out['ball' + i] = b === '0' ? '•' : b === 'w' ? 'W' : /^w\d$/.test(b) ? b.slice(1) + 'W' : b.startsWith('wd') ? 'WIDE' : b;
     out['ball' + i + 'Sub'] = b.startsWith('wd') ? b.slice(2) : '';
   }
   return out;

@@ -5,6 +5,7 @@
 <!-- PNG scorebug setup. In the app: pngedit.html?g=<graphic> (edit) or ?t=<sport> (new), Save writes it into the app.
      On the designer site (no app server): open a PNG zip, set it up, Export a style file for the app's Import. -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/ag-psd@31.0.2/dist/bundle.js"></script>
 <style>
   :root { --bg: #1A1823; --panel: #2B283A; --raised: #23212E; --red: #E40000; --blue: #00B7FF; --green: #00B13C; --yellow: #FCFF7A; --fg: #fff; --dim: #9a97ad; }
   * { box-sizing: border-box; }
@@ -36,6 +37,7 @@
   .card.above { box-shadow: 0 -3px 0 var(--blue); }
   .card.below { box-shadow: 0 3px 0 var(--blue); }
   .card.dragging { opacity: .4; }
+  .warn { color: var(--yellow); cursor: help; }
   .grip { cursor: grab; color: var(--dim); font-size: 16px; padding: 0 2px; user-select: none; }
   .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 4px; }
   .title { font-weight: 800; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -60,13 +62,17 @@
   <h1 id="h">Scorebug setup</h1>
   <select id="sport" hidden title="Sport"></select>
   <input id="title" placeholder="style name, e.g. Captains League bug" style="width:220px" hidden>
-  <label class="filebtn" id="openBtn" hidden>Open PNG zip or style file<input type="file" id="open" accept=".zip,.json" hidden></label>
+  <label class="filebtn" id="openBtn" hidden>Open PSD, PNG zip or style file<input type="file" id="open" accept=".zip,.json,.psd,.otf,.ttf" multiple hidden></label>
   <label>Reference <select id="refop"><option value="0">off</option><option value=".5" selected>50%</option><option value="1">100%</option></select></label>
   <button id="auto" title="Match the pieces to the reference: picks options, stacking order, hidden pieces and finds the live text">Auto build from reference</button>
   <button id="save" class="save">Save</button>
 </header>
 <section id="start" hidden>
-  <h2>Build a scorebug from PNG pieces</h2>
+  <h2>Build a scorebug from a PSD or PNG pieces</h2>
+  <p><b>PSD:</b> name the layers like the app's PSD import (<code>{awayScore}</code> on a text layer = live text, <code>{awayTeam}</code> on a group = its
+    layers are the options, <code>[outs&gt;=2]</code> = shown when). Rasterize layer styles (strokes, shadows) first: <i>Layer › Rasterize › Layer Style</i>.
+    Open the .psd together with its font files (select them all), or zip them up. Text comes out with Photoshop's exact font, size, color and alignment.</p>
+  <p><b>PNG pieces:</b></p>
   <ol>
     <li>Export every piece as a full-frame PNG (1920×1080, transparent, in position), plus one <b>full bug for reference</b> PNG.
       Put team/player options in folders (e.g. <i>Left teams</i>). Add the bug's font files (.otf/.ttf). Zip it.</li>
@@ -110,7 +116,7 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '
 const Q = new URLSearchParams(location.search);
 let G = Q.get('g'), APP = false, images = {}, fontFiles = {}, dirty = false, edit, built = { fields: {} }, sel = null /* the selected text item */, view = [0, 0, 1920, 1080], ready = false;
 
-const ROLES = { always: 'Always shown', pick: 'Option of a field', if: 'Shown when…', off: 'Not used' };
+const ROLES = { always: 'Always shown', pick: 'Option of a field', if: 'Shown when…', slot: 'Logo from a URL field', off: 'Not used' };
 const OPS = { truthy: 'is on', '!': 'is off', '=': '=', '!=': '≠', '>=': '≥', '<=': '≤', '>': '>', '<': '<' };
 const needsValue = op => !['truthy', '!'].includes(op);
 
@@ -144,12 +150,12 @@ const pieceCard = (b, first) => {
     </div>
     <div class="row">
       <select data-k="role">${Object.entries(ROLES).map(([k, v]) => `<option value="${k}" ${first.role === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
-      <input data-k="field" list="fieldNames" placeholder="field, e.g. awayTeam" value="${esc(first.field)}" ${['pick', 'if'].includes(first.role) ? '' : 'hidden'} style="flex:1">
+      <input data-k="field" list="fieldNames" placeholder="field, e.g. awayTeam" value="${esc(first.field)}" ${['pick', 'if', 'slot'].includes(first.role) ? '' : 'hidden'} style="flex:1">
       <select data-k="op" ${first.role === 'if' ? '' : 'hidden'}>${Object.entries(OPS).map(([k, v]) => `<option value="${k}" ${first.op === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
     </div>` + b.idx.map(i => {
       const it = edit.items[i];
       return `<div class="piece"><img class="thumb" src="${images[it.src]}">
-        <span class="nm" title="${esc(it.name)}">${esc(it.name)}</span>
+        <span class="nm" title="${esc(it.name)}">${it.warn ? `<span class="warn" title="${esc(it.warn)}">⚠</span> ` : ''}${esc(it.name)}</span>
         ${showVal ? `<input data-k="value" data-i="${i}" placeholder="${first.role === 'pick' ? 'option (* = fallback)' : 'value'}" value="${esc(it.value)}" style="width:150px">` : ''}</div>`;
     }).join('');
 };
@@ -350,30 +356,38 @@ $('auto').onclick = async () => {
 };
 
 $('open').onchange = async () => {
-  const f = $('open').files[0];
-  if (!f) return;
+  const files = [...$('open').files];
+  if (!files.length) return;
+  const psdFile = files.find(f => /\.psd$/i.test(f.name)), zip = files.find(f => /\.zip$/i.test(f.name)), json = files.find(f => /\.json$/i.test(f.name));
   $('openBtn').firstChild.textContent = 'Opening…';
   try {
-    if (/\.json$/i.test(f.name)) {  // a style file: carry on where it was exported
-      const d = JSON.parse(await f.text());
+    if (json) {  // a style file: carry on where it was exported
+      const d = JSON.parse(await json.text());
       if (d.jmStyle !== 1) throw new Error('Not a JM style file');
       if ($('sport').querySelector(`option[value="${d.sport}"]`)) $('sport').value = d.sport;
       $('title').value = d.title || '';
       fontFiles = d.fontFiles || {}; await addFonts(fontFiles);
-      await begin(d.edit, d.images, `Opened ${f.name}.`);
-    } else {
-      const { edit: e, images: imgs, fonts } = await PNGStyle.unpackZip(f);
-      fontFiles = fonts; await addFonts(fonts);
-      if (!$('title').value) $('title').value = f.name.replace(/\.zip$/i, '');
-      await begin(e, imgs);
-      if (e.ref) await $('auto').onclick();
-      else say('No "reference" PNG in the zip, so no auto build: set up each piece below.');
-      if (!Object.keys(fonts).length) $('log').textContent += '\nNo .otf/.ttf in the zip: text uses ' + defaultFont() +
-        '. Add the bug\'s font files to the zip for the exact font and sizes.';
-    }
+      await begin(d.edit, d.images, `Opened ${json.name}.`);
+    } else if (psdFile || zip) {
+      const main = psdFile || zip;
+      const looseFonts = await PNGStyle.readFonts(await Promise.all(files.filter(f => /\.(otf|ttf)$/i.test(f.name)).map(async f => ({ name: f.name, buf: await f.arrayBuffer() }))));
+      const out = psdFile ? await PNGStyle.unpackPsd(await psdFile.arrayBuffer(), looseFonts) : await PNGStyle.unpackZip(main);
+      fontFiles = { ...looseFonts, ...out.fonts }; await addFonts(fontFiles);
+      if (!$('title').value) $('title').value = main.name.replace(/\.(zip|psd)$/i, '');
+      await begin(out.edit, out.images);
+      if (out.warnings) {  // a PSD: layer names already say what everything is, so no auto build
+        say(`Opened ${main.name}: ${out.edit.items.filter(i => i.k === 'text').length} live text, ${out.edit.items.filter(i => i.k === 'img').length} pieces. ` +
+          'Check the test values, then ' + (APP ? 'Save.' : 'Export.') + (out.warnings.length ? '\n⚠ ' + out.warnings.join('\n⚠ ') : ''));
+      } else {
+        if (out.edit.ref) await $('auto').onclick();
+        else say('No "reference" PNG in the zip, so no auto build: set up each piece below.');
+        if (!Object.keys(out.fonts).length) $('log').textContent += '\nNo .otf/.ttf in the zip: text uses ' + defaultFont() +
+          '. Add the bug\'s font files to the zip for the exact font and sizes.';
+      }
+    } else throw new Error('Pick a .psd, a .zip of PNGs, or a style file (.json), plus any font files.');
     dirty = true;
   } catch (e) { say(e.message, true); }
-  $('openBtn').firstChild.textContent = 'Open PNG zip or style file';
+  $('openBtn').firstChild.textContent = 'Open PSD, PNG zip or style file';
   $('open').value = '';
 };
 
@@ -443,7 +457,7 @@ addEventListener('beforeunload', e => { if (dirty) e.preventDefault(); });
     for (const it of [...spec.edit.items, spec.edit.ref].filter(i => i && i.src)) imgs[it.src] = `graphics/${G}/${it.src}`;
     return begin(spec.edit, imgs);
   }
-  $('h').textContent = APP ? 'New scorebug style (PNG pieces)' : 'JM Scorebug Builder';
+  $('h').textContent = APP ? 'New scorebug style' : 'JM Scorebug Builder';
   $('sport').hidden = $('title').hidden = $('openBtn').hidden = false;
   $('sport').disabled = APP;  // the app opened this from a sport card
   $('start').hidden = false;

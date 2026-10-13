@@ -1,6 +1,6 @@
 // Ball In Play scorer (cricket rules): an event log -> every field the bug shows.
 // Used by control.html; the log lives at gfx/<tournament>/scorer/log so Undo is just "drop the last event".
-// Events: {k:'ball', t}  t = 0 dot | 1-6 runs | w wicket | wd wide | wd1-wd6 wide + runs
+// Events: {k:'ball', t}  t = 0 dot | 1-6 runs | w wicket | w1-w3 runs + wicket (shown 1W-3W) | wd wide | wd1-wd6 wide + runs
 //         {k:'bat', slot: 0|1, name}  {k:'bowl', name}  {k:'swap'}  {k:'innings'}
 // Rules (Chris, 2026-10-09): an innings ends after 4 overs or 3 wickets · wide = 1 run, wide+N = 1+N, to team + bowler, not a ball ·
 // a wicket is a good ball · strike swaps on odd runs (incl. runs on a wide) and at the end of every over.
@@ -8,7 +8,8 @@ const BIP = {
   OVERS: 4,
   WICKETS: 3,
   legal: (t) => !String(t).startsWith('wd'),
-  runs: (t) => (t === 'w' || t === '0' ? 0 : String(t).startsWith('wd') ? 1 + (+String(t).slice(2) || 0) : +t),
+  wicket: (t) => /^w\d?$/.test(String(t)), // w, or w1-w3: runs taken on the ball, then a wicket
+  runs: (t) => (t === 'w' || t === '0' ? 0 : String(t).startsWith('wd') ? 1 + (+String(t).slice(2) || 0) : /^w\d$/.test(t) ? +String(t).slice(1) : +t),
   // The over's circles: empty circles = good balls left in the over, always. 6 circles, +1 per wide up to 8;
   // when the deliveries don't fit (e.g. a 3rd wide), the oldest drops off the left so the empties stay right.
   // over = "0,1,wd,wd2,w" (this over, oldest first) -> { count, shown: deliveries in circles 1..n }
@@ -49,8 +50,8 @@ const BIP = {
         const bat = I.stats[I.strike];
         const bowl = (I.bowlers[I.bowler] ||= { r: 0, w: 0, x: 0, legal: 0 });
         I.runs += r; teamRuns[(inn - 1) % 2] += r; bowl.r += r;
-        if (legal) { bat.b++; bowl.legal++; I.legal++; if (t !== 'w') bat.r += r; } else bowl.x++;
-        if (t === 'w') { I.wkts++; bowl.w++; I.needBatter = I.strike; } // striker is out; new batter takes their end
+        if (legal) { bat.b++; bowl.legal++; I.legal++; bat.r += r; } else bowl.x++;
+        if (BIP.wicket(t)) { I.wkts++; bowl.w++; I.needBatter = I.strike; } // the batter who faced it is out; new batter takes their end
         if ((legal ? r : r - 1) % 2) I.strike ^= 1; // odd runs actually run
         if (legal && I.over.filter(BIP.legal).length === 6) { I.overDone = true; I.strike ^= 1; }
       }
@@ -120,13 +121,36 @@ if (typeof module !== 'undefined' && require.main === module) {
   const w3 = [...log, ball('w'), { k: 'bat', slot: 0, name: 'C' }, ball('w'), { k: 'bat', slot: 0, name: 'D' }, ball('w')];
   d = BIP.derive(w3, 'Woogas', 'Baggage');
   assert.deepEqual([d.values.outs, d.inningsDone, d.needBatter, d.values.situation], [3, true, null, '']);
+  // 1W-3W (Chris 2026-10-13): runs to batter/team/bowler, a good ball, a wicket for the bowler, the batter who faced is out
+  d = BIP.derive([{ k: 'bat', slot: 0, name: 'A' }, { k: 'bat', slot: 1, name: 'B' }, { k: 'bowl', name: 'C' }, ball('2'), ball('w1')]);
+  assert.deepEqual([d.values.firstScore, d.values.outs, d.values.overs, d.values.bowlerFigures], [3, 1, '0.2', '3r-1w 0x']);
+  assert.equal(d.needBatter, 0, 'A faced the 1W: A is out');
+  assert.deepEqual([d.values.striker, d.values.strikerRuns], ['B', 0], 'odd run: strike swapped to B');
+  assert.equal(BIP.circles('2,w1').shown.join(','), '2,w1');
   // circles: empties always = good balls left (Chris 2026-10-12)
   const c = o => { const r = BIP.circles(o); return [r.count, r.shown.join(',')]; };
   assert.deepEqual(c(''), [6, '']);
   assert.deepEqual(c('1,wd'), [7, '1,wd']);                    // a wide adds a circle
   assert.deepEqual(c('wd,wd,wd'), [8, 'wd,wd']);               // 3rd wide: 6 good balls still to come -> 6 empties, oldest wide off the left
   assert.deepEqual(c('1,wd,2,wd,wd'), [8, 'wd,2,wd,wd']);      // 4 good balls left -> 4 empties, 4 deliveries shown, the 1 drops off
-  assert.deepEqual(c('1,2,3,4,5,6,wd,wd,wd'), [8, '2,3,4,5,6,wd,wd,wd']);  // over done: latest 8
+  assert.deepEqual(c('wd,1,2,wd,3,wd,4,5,6'), [8, '1,2,wd,3,wd,4,5,6']);  // over done on its 6th good ball: latest 8
+  // An over ends on its 6th good ball, never on a wide (a wide after it starts the next over), so the 8th circle
+  // is never a wide. Every possible over with up to 4 wides, checked at every ball as the scorer builds it:
+  const overs = [];
+  const grow = (seq, legal, wides) => {
+    if (legal === 6) return overs.push(seq);
+    grow([...seq, '1'], legal + 1, wides);
+    if (wides < 4) grow([...seq, 'wd'], legal, wides + 1);
+  };
+  grow([], 0, 0);
+  for (const seq of overs) {
+    const log = seq.map(ball);
+    for (let k = 1; k <= log.length; k++) {
+      const { count, shown } = BIP.circles(BIP.derive(log.slice(0, k)).values.over);
+      if (count === 8 && shown.length === 8) assert.ok(BIP.legal(shown[7]), `8th circle a wide: ${seq.slice(0, k)}`);
+    }
+    assert.equal(BIP.derive([...log, ball('wd')]).values.over, 'wd', 'a wide after the 6th good ball starts the next over');
+  }
   assert.deepEqual(c('0,w,wd'), [7, '0,w,wd']);                // a wicket is a good ball
   console.log('bip.js: all checks passed');
 }
